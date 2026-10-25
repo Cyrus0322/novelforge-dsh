@@ -2,7 +2,8 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；包名：`novelforge-dsh`；版本：`0.1.0`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.1.0`。
+GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>
 
 ---
 
@@ -78,13 +79,20 @@ novelforge-dsh/
 
 ### 3.2 安装到 DSH
 
+一键安装（推荐，已发布到 npm）：
+
+```sh
+dsh plugin --profile novel add novelforge-dsh
+dsh --profile novel --dump-config   # 应出现 novelforge-dsh 层与 novelforge 行
+dsh --profile novel web
+```
+
+从源码安装：
+
 ```sh
 pnpm install
 pnpm run build
-dsh plugin --profile novel add "$PWD"         # 本地 checkout
-dsh plugin --profile novel add novelforge-dsh # 或直接从 npm 安装
-dsh --profile novel --dump-config     # 应出现 novelforge-dsh 层与 novelforge 行
-dsh --profile novel web
+dsh plugin --profile novel add "$PWD"
 ```
 
 **pnpm 用户注意原生依赖**：本包依赖 `better-sqlite3`。pnpm 10+ 默认拦截依赖构建脚本，首次安装可能报 `ERR_PNPM_IGNORED_BUILDS`，且 bundle 不会被注册。处理方式：把 `~/.dsh/profiles/<name>/pnpm-workspace.yaml` 里的占位值改成 `allowBuilds: { better-sqlite3: true }`，再重新执行 `dsh plugin --profile <name> add novelforge-dsh`。若出现 `atomic-write: timed out waiting for the writer lock`，删除该目录下的 `package.json.lock` 后重试。npm 用户不受此影响。
