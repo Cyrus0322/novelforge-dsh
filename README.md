@@ -116,7 +116,7 @@ pnpm run build
 dsh plugin --profile novel add "$PWD"
 ```
 
-**0.2.1 起不再有原生依赖**：数据库改用 Node 内置的 `node:sqlite`，安装不再触发 `prebuild-install` / `node-gyp`，也就不会再出现下面的问题。以下为历史记录，仅供排查旧版本（0.1.x）参考。
+**0.4.2 起真正做到「零原生依赖」**：除了把数据库换成 Node 内置的 `node:sqlite`（0.2.1 已做），0.4.2 还把 drizzle 的同步驱动本地化，去掉了它对 `better-sqlite3` 的运行时 import。此前纯 npm 安装（不装可选 peer）会在启动时直接抛 `Cannot find package 'better-sqlite3'`；DSH 用 pnpm 会自动装 peer，所以一直没暴露。现已用「全新目录 `npm i novelforge-dsh@0.4.2` + 不装 better-sqlite3」实测：CLI 建项目、导出、`novelforge studio` 全部正常。以下为历史记录，仅供排查旧版本（0.1.x）参考。
 
 **下载不到预编译二进制时会退回源码编译（Windows 常见）**：`better-sqlite3` 默认从 GitHub Release 下载预编译产物。若网络到 GitHub 不通，`prebuild-install` 会报 `No prebuilt binaries found` 并退回 `node-gyp rebuild`，在部分环境下还会因 `enable_thin_lto is not defined` 编译失败。解决方式是指定镜像，任选其一：
 
