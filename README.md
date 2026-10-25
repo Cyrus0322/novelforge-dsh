@@ -11,13 +11,13 @@
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
 | Node.js | 独立 CLI：`>=22.18.0` | 本机实测 `v22.22.2` 可运行 CLI、构建与全部测试 |
-| Node.js | DSH 宿主：`>=24.9.0` | 官方根包 `package.json` 的 `engines` 要求，以宿主为准 |
+| Node.js | DSH 宿主：`>=24.9.0` | 官方根包 `package.json` 的 `engines` 要求；**本机已升级至 v24.22.1 并实测通过** |
 | pnpm | `11.7.0` | 本机实测；仓库源码自身要求 `11.28.5` |
 | TypeScript | `5.9` | `tsc` 构建到 `dist/` |
 | 数据库 | SQLite（`better-sqlite3`） | 单文件，无需外部服务 |
 | DSH | `>=0.2.1-rc.3 <0.3.0` | 在 `package.json` 的 `engines.dsh` 中声明 |
 
-> 未验证项：当前开发机 Node.js 为 22.22.2，**未**在官方要求的 `>=24.9.0` DSH 宿主中做过端到端验收。加载进 DSH 前请先升级 Node.js 并按第 9 节复核接口。
+> 已在真实 DSH `0.2.1-rc.3` 宿主中完成：`dsh plugin add` 安装、`--dump-config` 出现 `novelforge-dsh` 层、headless 启动无插件加载错误。唯一未做的是「模型在会话内真实调用 `novel_*` 工具」——本机无可用 DeepSeek API Key，需用你自己的 Key 验收。详见 `docs/dsh-compatibility.md`。
 
 ---
 

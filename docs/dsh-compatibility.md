@@ -43,8 +43,21 @@ dsh --profile novel web
 
 `--dump-config` 应出现 `novelforge-dsh` 层与 `novelforge` 行。随后在 DSH 会话中要求模型调用 `novel_list_projects` 或 `novel_search`。
 
-## 尚未声称完成的验证
+## 2026-10-25 实测结果（本机，Node.js v24.22.1）
 
-- 当前开发机为 Node.js 22.22.2，不能据此宣称已在官方要求的 Node.js >=24.9.0 DSH 宿主中完成端到端验收。
+升级环境后，已在真实 DSH 宿主中完成下列验证：
+
+| 步骤 | 命令 | 结果 |
+| --- | --- | --- |
+| 安装 DSH CLI | `npm i @deepseek-ai/dsh@0.2.1-rc.3` | 成功，`dsh --version` 输出 `0.2.1-rc.3` |
+| 初始化 profile | `dsh plugin --profile nf add <checkout>` | 成功，写入 `~/.dsh/profiles/nf`；pnpm 以 `link:` 方式链接本 checkout |
+| 层组合 | `dsh --profile nf --dump-config` | 成功，输出中出现 `# == novelforge-dsh` 层，含 `id: novelforge` 与全部 14 项默认配置 |
+| 版本闸门 | `engines.dsh: >=0.2.1-rc.3 <0.3.0` | 通过：宿主版本号在范围内，未被拒绝 |
+| 启动 headless | `dsh --profile nfh "<任务>"` | 插件栈可启动，未出现 novelforge 模块解析或 apply 报错 |
+
+### 仍未完成的验证
+
+- **未做真实工具调用**：本机没有可用的 DeepSeek API Key，headless 启动停在 `MISSING_CREDENTIAL`（占位 Key 时 `api.deepseek.com/models` 返回 401）。因此"模型在会话内实际调用 `novel_*` 工具"这一环仍待你在有 Key 的机器上验收。
+- **未做人工审批链路的宿主内验收**：`ctx.approval.request` 的类型与返回值已按 `packages/interaction/user-approval/src/index.ts` 实现并由单测覆盖（含拒绝与取消），但未在真实交互界面中跑通一次。
 - 本 MVP 不实现内嵌 React/Slot 工作台；CLI 与 DSH 工具是已交付入口。未来 UI 必须单独核验 Client Modules、Remote API 与 Slot，不得让浏览器直接访问 SQLite。
 - DSH 仍可能调整预览接口。升级宿主时应重新核对上述官方文档、实际 `package.json` 和 `defineTool` 源码。
