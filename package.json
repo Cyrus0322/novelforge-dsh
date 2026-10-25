@@ -1,6 +1,6 @@
 {
   "name": "novelforge-dsh",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A persistent, human-approved long-form novel writing plugin for DeepSeek Harness",
   "author": "Cyrus0322",
   "license": "MIT",

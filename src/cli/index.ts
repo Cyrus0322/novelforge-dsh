@@ -13,7 +13,7 @@ const program = new Command()
 program
   .name('novelforge')
   .description('NovelForge DSH：可追溯、需人工确认的长篇小说创作工具')
-  .version('0.5.0')
+  .version('0.6.0')
   .option('--db <path>', 'SQLite 数据库路径')
   .option('--model <name>', 'DeepSeek 模型名称')
 
