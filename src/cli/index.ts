@@ -13,7 +13,7 @@ const program = new Command()
 program
   .name('novelforge')
   .description('NovelForge DSH：可追溯、需人工确认的长篇小说创作工具')
-  .version('0.4.2')
+  .version('0.5.0')
   .option('--db <path>', 'SQLite 数据库路径')
   .option('--model <name>', 'DeepSeek 模型名称')
 
@@ -199,6 +199,33 @@ program.command('export').description('导出已定稿章节为 Markdown')
     } else {
       process.stdout.write(markdown)
     }
+  }))
+
+program.command('ingest').description('把素材（设定笔记/人物小传/剧情梗概）抽成结构化资料，默认生成待审批提议')
+  .requiredOption('--project <id>', '项目 ID')
+  .option('--file <path>', '素材文件路径（.md/.txt）；省略则从 stdin 读')
+  .option('--title <text>', '这批素材的标题', '')
+  .option('--focus <text>', '整理重点，例如「只抽人物与势力」', '')
+  .option('--mode <mode>', 'propose=只生成提议（默认） / apply=同时应用', 'propose')
+  .option('--apply', '等同于 --mode apply', false)
+  .action((options: { project: string; file?: string; title: string; focus: string; mode: string; apply: boolean }) => run(async instance => {
+    const { readFileSync } = await import('node:fs')
+    const material = options.file ? readFileSync(options.file, 'utf8') : readFileSync(0, 'utf8')
+    const mode = options.apply ? 'apply' : (options.mode === 'apply' ? 'apply' : 'propose')
+    const outcome = await instance.ingestMaterial(options.project, {
+      material,
+      ...(options.title ? { title: options.title } : {}),
+      ...(options.focus ? { focus: options.focus } : {}),
+      mode,
+    })
+    print({
+      batch: { id: outcome.batch.id, status: outcome.batch.status },
+      stats: outcome.stats,
+      proposals: outcome.proposals.map(proposal => ({
+        id: proposal.id, targetType: proposal.targetType, operation: proposal.operation, status: proposal.status,
+      })),
+      ...(outcome.applied ? { applied: outcome.applied } : {}),
+    })
   }))
 
 program.command('studio').description('启动可视化小说工作台（本地网页，浏览器不直接访问数据库）')

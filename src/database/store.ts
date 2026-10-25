@@ -6,13 +6,18 @@ import {
   changeProposals,
   chapterRevisions,
   chapters,
+  characterStates,
   entities,
   events,
   foreshadowing,
+  ingestBatches,
   outlines,
+  plotThreads,
   projects,
+  relations,
   reviewIssues,
   reviewRuns,
+  scenes,
   workflowRuns,
 } from './schema.js'
 import type { NovelBlueprint, OutlinePlan, ReviewResult } from '../domain/schemas.js'
@@ -34,6 +39,21 @@ export type ReviewIssue = typeof reviewIssues.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
 export type ChangeProposal = typeof changeProposals.$inferSelect
 export type AuditEntry = typeof auditLog.$inferSelect
+export type Relation = typeof relations.$inferSelect
+export type PlotThread = typeof plotThreads.$inferSelect
+export type Scene = typeof scenes.$inferSelect
+export type CharacterState = typeof characterStates.$inferSelect
+export type IngestBatch = typeof ingestBatches.$inferSelect
+
+export interface RelationView extends Relation {
+  sourceName: string
+  targetName: string
+}
+
+export interface SceneView extends Scene {
+  castNames: string[]
+  locationName: string | null
+}
 
 /** 正文版本来源：模型生成（draft/continue/rewrite/revise）与人工撰写/回滚都只追加不覆盖。 */
 export type RevisionKind = 'draft' | 'continue' | 'rewrite' | 'revise' | 'rollback' | 'manual'
@@ -56,6 +76,10 @@ export interface ProjectOverview {
     pendingProposals: number
     openIssues: number
     revisions: number
+    relations: number
+    threads: number
+    scenes: number
+    ingestBatches: number
   }
   currentChapter: Chapter | null
   openIssues: Array<ReviewIssue & { chapterId: string; chapterNo: number; chapterTitle: string }>
@@ -71,17 +95,28 @@ export interface ProjectInput {
   genre: string
   premise?: string | undefined
   styleGuide?: string | undefined
+  pov?: string | undefined
+  tense?: string | undefined
+  chapterWordsMin?: number | undefined
+  chapterWordsMax?: number | undefined
+  targetChapters?: number | undefined
+  themes?: string[] | undefined
 }
+
+export type ProposalTargetType = 'entity' | 'event' | 'foreshadowing' | 'relation' | 'thread'
 
 export interface ProposalInput {
   projectId: string
   chapterId?: string | undefined
   sourceRevisionId?: string | undefined
-  targetType: 'entity' | 'event' | 'foreshadowing'
+  targetType: ProposalTargetType
   targetId?: string | undefined
   operation: 'create' | 'update'
   payload: unknown
   expectedVersion?: number | undefined
+  batchId?: string | undefined
+  source?: string | undefined
+  confidence?: number | undefined
 }
 
 export interface SearchResult {
@@ -143,6 +178,9 @@ export class NovelStore {
       genre: requireNonEmpty(input.genre, 'genre'),
       premise: input.premise?.trim() ?? '',
       styleGuide: input.styleGuide?.trim() ?? '',
+      pov: input.pov?.trim() ?? '', tense: input.tense?.trim() ?? '',
+      chapterWordsMin: input.chapterWordsMin ?? 0, chapterWordsMax: input.chapterWordsMax ?? 0,
+      targetChapters: input.targetChapters ?? 0, themesJson: JSON.stringify(input.themes ?? []),
       status: 'active', version: 1, createdAt: timestamp, updatedAt: timestamp,
     }
     this.db.insert(projects).values(row).run()
@@ -177,6 +215,16 @@ export class NovelStore {
     status?: string | undefined
     sourceChapterId?: string | undefined
     sourceRevisionId?: string | undefined
+    role?: string | undefined
+    goal?: string | undefined
+    motivation?: string | undefined
+    flaw?: string | undefined
+    secret?: string | undefined
+    voice?: string | undefined
+    arc?: string | undefined
+    aliases?: string[] | undefined
+    firstAppearanceChapterId?: string | null | undefined
+    importance?: number | undefined
   }): Entity {
     this.getProject(input.projectId)
     const timestamp = now()
@@ -185,6 +233,10 @@ export class NovelStore {
       name: requireNonEmpty(input.name, 'name'), summary: input.summary?.trim() ?? '',
       attributesJson: JSON.stringify(input.attributes ?? {}), status: input.status ?? 'confirmed',
       sourceChapterId: input.sourceChapterId ?? null, sourceRevisionId: input.sourceRevisionId ?? null,
+      role: input.role?.trim() ?? '', goal: input.goal?.trim() ?? '', motivation: input.motivation?.trim() ?? '',
+      flaw: input.flaw?.trim() ?? '', secret: input.secret?.trim() ?? '', voice: input.voice?.trim() ?? '',
+      arc: input.arc?.trim() ?? '', aliasesJson: JSON.stringify(input.aliases ?? []),
+      firstAppearanceChapterId: input.firstAppearanceChapterId ?? null, importance: input.importance ?? 3,
       version: 1, createdAt: timestamp, updatedAt: timestamp,
     }
     this.db.insert(entities).values(row).run()
@@ -232,8 +284,9 @@ export class NovelStore {
           }
           const chapterRow: Chapter = {
             id: id('chapter'), projectId, outlineId: outlineRow.id, chapterNo,
-            title: chapter.title, status: 'planned', currentRevisionId: null, version: 1,
-            createdAt: timestamp, updatedAt: timestamp,
+            title: chapter.title, status: 'planned', currentRevisionId: null,
+            summary: chapter.summary ?? '', povEntityId: null, targetWords: 0,
+            version: 1, createdAt: timestamp, updatedAt: timestamp,
           }
           this.db.insert(outlines).values(outlineRow).run()
           this.db.insert(chapters).values(chapterRow).run()
@@ -411,7 +464,9 @@ export class NovelStore {
       id: id('proposal'), projectId: input.projectId, chapterId: input.chapterId ?? null,
       sourceRevisionId: input.sourceRevisionId ?? null, targetType: input.targetType,
       targetId: input.targetId ?? null, operation: input.operation, payloadJson: JSON.stringify(payload),
-      expectedVersion: input.expectedVersion ?? null, status: 'pending', createdAt: now(), appliedAt: null,
+      expectedVersion: input.expectedVersion ?? null,
+      batchId: input.batchId ?? null, source: input.source ?? 'manual', confidence: input.confidence ?? null,
+      status: 'pending', createdAt: now(), appliedAt: null,
     }
     this.db.insert(changeProposals).values(row).run()
     this.audit(input.projectId, 'proposal.create', row.id, undefined, row)
@@ -439,6 +494,16 @@ export class NovelStore {
         this.createEntity({
           projectId: proposal.projectId, kind: payload.kind ?? 'other', name: payload.name ?? '未命名实体',
           summary: payload.summary, attributes: payload.attributes, status: payload.status ?? 'confirmed',
+          ...(payload.role === undefined ? {} : { role: payload.role }),
+          ...(payload.goal === undefined ? {} : { goal: payload.goal }),
+          ...(payload.motivation === undefined ? {} : { motivation: payload.motivation }),
+          ...(payload.flaw === undefined ? {} : { flaw: payload.flaw }),
+          ...(payload.secret === undefined ? {} : { secret: payload.secret }),
+          ...(payload.voice === undefined ? {} : { voice: payload.voice }),
+          ...(payload.arc === undefined ? {} : { arc: payload.arc }),
+          ...(payload.aliases === undefined ? {} : { aliases: payload.aliases }),
+          ...(payload.firstAppearanceChapterId === undefined ? {} : { firstAppearanceChapterId: payload.firstAppearanceChapterId }),
+          ...(payload.importance === undefined ? {} : { importance: payload.importance }),
           ...(proposal.chapterId ? { sourceChapterId: proposal.chapterId } : {}),
           ...(proposal.sourceRevisionId ? { sourceRevisionId: proposal.sourceRevisionId } : {}),
         })
@@ -453,6 +518,17 @@ export class NovelStore {
           summary: payload.summary ?? current.summary,
           attributesJson: JSON.stringify(payload.attributes ?? parseJson(current.attributesJson, {})),
           status: payload.status ?? current.status,
+          role: payload.role ?? current.role,
+          goal: payload.goal ?? current.goal,
+          motivation: payload.motivation ?? current.motivation,
+          flaw: payload.flaw ?? current.flaw,
+          secret: payload.secret ?? current.secret,
+          voice: payload.voice ?? current.voice,
+          arc: payload.arc ?? current.arc,
+          aliasesJson: payload.aliases === undefined ? current.aliasesJson : JSON.stringify(payload.aliases),
+          firstAppearanceChapterId: payload.firstAppearanceChapterId === undefined
+            ? current.firstAppearanceChapterId : payload.firstAppearanceChapterId,
+          importance: payload.importance ?? current.importance,
           version: current.version + 1, updatedAt: now(),
         }
         this.db.update(entities).set(next).where(and(eq(entities.id, current.id), eq(entities.version, current.version))).run()
@@ -465,12 +541,66 @@ export class NovelStore {
         id: proposal.targetId ?? id('event'), projectId: proposal.projectId, chapterId: proposal.chapterId,
         eventTime: payload.eventTime ?? '', summary: payload.summary ?? payload.description ?? '',
         status: payload.status ?? 'confirmed', sourceRevisionId: proposal.sourceRevisionId,
+        participantsJson: JSON.stringify(payload.participants ?? []), locationEntityId: payload.locationEntityId ?? null,
+        importance: payload.importance ?? 3,
         version: 1, createdAt: timestamp, updatedAt: timestamp,
       }
       if (!row.summary) throw new NovelForgeError('INVALID_INPUT', '事件提议必须包含 summary。')
       this.db.insert(events).values(row).run()
       this.index(row.id, row.projectId, 'event', row.chapterId ?? row.id, row.status, row.summary)
       this.audit(row.projectId, 'event.apply_proposal', row.id, undefined, row)
+    } else if (proposal.targetType === 'relation') {
+      const timestamp = now()
+      const sourceId = payload.sourceId ?? this.resolveEntityIdByName(proposal.projectId, payload.sourceName)
+      const targetId = payload.targetId ?? this.resolveEntityIdByName(proposal.projectId, payload.targetName)
+      if (!sourceId || !targetId) {
+        throw new NovelForgeError('INVALID_INPUT', `关系提议的两端在资料库中不存在：${payload.sourceName ?? payload.sourceId ?? '?'} / ${payload.targetName ?? payload.targetId ?? '?'}。请先应用人物提议。`)
+      }
+      const existing = this.db.select().from(relations).where(and(
+        eq(relations.projectId, proposal.projectId),
+        eq(relations.sourceId, sourceId),
+        eq(relations.targetId, targetId),
+        eq(relations.kind, payload.relationType ?? 'other'),
+      )).get()
+      if (existing) {
+        this.db.update(relations).set({
+          tension: payload.tension ?? existing.tension,
+          notes: payload.notes ?? existing.notes,
+          version: existing.version + 1,
+          updatedAt: timestamp,
+        }).where(eq(relations.id, existing.id)).run()
+        this.audit(proposal.projectId, 'relation.apply_proposal', existing.id, existing, { ...existing, version: existing.version + 1 })
+      } else {
+        this.createRelation({
+          projectId: proposal.projectId, sourceId, targetId,
+          kind: payload.relationType ?? 'other',
+          ...(payload.tension === undefined ? {} : { tension: payload.tension }),
+          ...(payload.notes === undefined ? {} : { notes: payload.notes }),
+        })
+      }
+    } else if (proposal.targetType === 'thread') {
+      const timestamp = now()
+      const name = payload.name?.trim()
+      if (!name) throw new NovelForgeError('INVALID_INPUT', '剧情线提议必须包含 name。')
+      const existing = this.db.select().from(plotThreads)
+        .where(and(eq(plotThreads.projectId, proposal.projectId), eq(plotThreads.name, name))).get()
+      if (existing) {
+        this.db.update(plotThreads).set({
+          kind: payload.threadKind ?? existing.kind,
+          goal: payload.goal ?? existing.goal,
+          summary: payload.summary ?? existing.summary,
+          version: existing.version + 1,
+          updatedAt: timestamp,
+        }).where(eq(plotThreads.id, existing.id)).run()
+        this.audit(proposal.projectId, 'thread.apply_proposal', existing.id, existing, { ...existing, version: existing.version + 1 })
+      } else {
+        this.createPlotThread({
+          projectId: proposal.projectId, name,
+          ...(payload.threadKind === undefined ? {} : { kind: payload.threadKind }),
+          ...(payload.goal === undefined ? {} : { goal: payload.goal }),
+          ...(payload.summary === undefined ? {} : { summary: payload.summary }),
+        })
+      }
     } else {
       const timestamp = now()
       const row: Foreshadowing = {
@@ -478,6 +608,7 @@ export class NovelStore {
         name: payload.name ?? '未命名伏笔', description: payload.description ?? payload.summary ?? '',
         plantChapterId: payload.plantChapterId ?? proposal.chapterId,
         payoffChapterId: payload.payoffChapterId ?? null, status: payload.status === 'cancelled' ? 'abandoned' : 'open',
+        kind: payload.kind ?? '', importance: payload.importance ?? 3, notes: payload.notes ?? '',
         version: 1, createdAt: timestamp, updatedAt: timestamp,
       }
       this.db.insert(foreshadowing).values(row).run()
@@ -612,6 +743,12 @@ ${row.description}`
     premise?: string | undefined
     styleGuide?: string | undefined
     status?: string | undefined
+    pov?: string | undefined
+    tense?: string | undefined
+    chapterWordsMin?: number | undefined
+    chapterWordsMax?: number | undefined
+    targetChapters?: number | undefined
+    themes?: string[] | undefined
   }, expectedVersion?: number): Project {
     const current = this.getProject(projectId)
     if (expectedVersion !== undefined && expectedVersion !== current.version) {
@@ -623,6 +760,12 @@ ${row.description}`
       premise: patch.premise === undefined ? current.premise : patch.premise.trim(),
       styleGuide: patch.styleGuide === undefined ? current.styleGuide : patch.styleGuide.trim(),
       status: patch.status ?? current.status,
+      pov: patch.pov === undefined ? current.pov : patch.pov.trim(),
+      tense: patch.tense === undefined ? current.tense : patch.tense.trim(),
+      chapterWordsMin: patch.chapterWordsMin ?? current.chapterWordsMin,
+      chapterWordsMax: patch.chapterWordsMax ?? current.chapterWordsMax,
+      targetChapters: patch.targetChapters ?? current.targetChapters,
+      themesJson: patch.themes === undefined ? current.themesJson : JSON.stringify(patch.themes),
       version: current.version + 1,
       updatedAt: now(),
     }
@@ -637,6 +780,16 @@ ${row.description}`
     kind?: string | undefined
     attributes?: Record<string, unknown> | undefined
     status?: string | undefined
+    role?: string | undefined
+    goal?: string | undefined
+    motivation?: string | undefined
+    flaw?: string | undefined
+    secret?: string | undefined
+    voice?: string | undefined
+    arc?: string | undefined
+    aliases?: string[] | undefined
+    firstAppearanceChapterId?: string | null | undefined
+    importance?: number | undefined
   }, expectedVersion?: number): Entity {
     const current = this.getEntity(entityId)
     if (expectedVersion !== undefined && expectedVersion !== current.version) {
@@ -648,6 +801,17 @@ ${row.description}`
       summary: patch.summary === undefined ? current.summary : patch.summary.trim(),
       attributesJson: patch.attributes === undefined ? current.attributesJson : JSON.stringify(patch.attributes),
       status: patch.status ?? current.status,
+      role: patch.role === undefined ? current.role : patch.role.trim(),
+      goal: patch.goal === undefined ? current.goal : patch.goal.trim(),
+      motivation: patch.motivation === undefined ? current.motivation : patch.motivation.trim(),
+      flaw: patch.flaw === undefined ? current.flaw : patch.flaw.trim(),
+      secret: patch.secret === undefined ? current.secret : patch.secret.trim(),
+      voice: patch.voice === undefined ? current.voice : patch.voice.trim(),
+      arc: patch.arc === undefined ? current.arc : patch.arc.trim(),
+      aliasesJson: patch.aliases === undefined ? current.aliasesJson : JSON.stringify(patch.aliases),
+      firstAppearanceChapterId: patch.firstAppearanceChapterId === undefined
+        ? current.firstAppearanceChapterId : patch.firstAppearanceChapterId,
+      importance: patch.importance ?? current.importance,
       version: current.version + 1,
       updatedAt: now(),
     }
@@ -784,6 +948,10 @@ ${row.description}`
         pendingProposals: pendingProposals.length,
         openIssues: openIssues.length,
         revisions: totalRevisions,
+        relations: this.listRelations(projectId).length,
+        threads: this.listPlotThreads(projectId).length,
+        scenes: this.db.select({ count: sql<number>`count(*)` }).from(scenes).where(eq(scenes.projectId, projectId)).get()?.count ?? 0,
+        ingestBatches: this.listIngestBatches(projectId).length,
       },
       currentChapter,
       openIssues,
@@ -839,14 +1007,19 @@ ${row.description}`
     eventTime?: string | undefined
     status?: string | undefined
     chapterId?: string | undefined
+    participants?: string[] | undefined
+    locationEntityId?: string | null | undefined
+    importance?: number | undefined
   }): StoryEvent {
     this.getProject(input.projectId)
     const timestamp = now()
     const row: StoryEvent = {
       id: id('event'), projectId: input.projectId, chapterId: input.chapterId ?? null,
       eventTime: input.eventTime?.trim() ?? '', summary: requireNonEmpty(input.summary, 'summary'),
-      status: input.status ?? 'confirmed', sourceRevisionId: null, version: 1,
-      createdAt: timestamp, updatedAt: timestamp,
+      status: input.status ?? 'confirmed', sourceRevisionId: null,
+      participantsJson: JSON.stringify(input.participants ?? []), locationEntityId: input.locationEntityId ?? null,
+      importance: input.importance ?? 3,
+      version: 1, createdAt: timestamp, updatedAt: timestamp,
     }
     this.db.insert(events).values(row).run()
     this.index(row.id, row.projectId, 'event', row.chapterId ?? row.id, row.status, row.summary)
@@ -862,14 +1035,18 @@ ${row.description}`
     status?: string | undefined
     plantChapterId?: string | undefined
     payoffChapterId?: string | undefined
+    kind?: string | undefined
+    importance?: number | undefined
+    notes?: string | undefined
   }): Foreshadowing {
     this.getProject(input.projectId)
     const timestamp = now()
     const row: Foreshadowing = {
       id: id('foreshadowing'), projectId: input.projectId, name: requireNonEmpty(input.name, 'name'),
       description: input.description?.trim() ?? '', plantChapterId: input.plantChapterId ?? null,
-      payoffChapterId: input.payoffChapterId ?? null, status: input.status ?? 'open', version: 1,
-      createdAt: timestamp, updatedAt: timestamp,
+      payoffChapterId: input.payoffChapterId ?? null, status: input.status ?? 'open',
+      kind: input.kind ?? '', importance: input.importance ?? 3, notes: input.notes ?? '',
+      version: 1, createdAt: timestamp, updatedAt: timestamp,
     }
     this.db.insert(foreshadowing).values(row).run()
     this.index(row.id, row.projectId, 'foreshadowing', row.plantChapterId ?? row.id, row.status, `${row.name}
@@ -900,7 +1077,8 @@ ${row.description}`)
       this.db.insert(outlines).values(outlineRow).run()
       const chapterRow: Chapter = {
         id: id('chapter'), projectId, outlineId: outlineRow.id, chapterNo,
-        title, status: 'planned', currentRevisionId: null, version: 1,
+        title, status: 'planned', currentRevisionId: null,
+        summary: '', povEntityId: null, targetWords: 0, version: 1,
         createdAt: timestamp, updatedAt: timestamp,
       }
       this.db.insert(chapters).values(chapterRow).run()
@@ -970,4 +1148,315 @@ ${row.description}`)
     return this.db.select().from(auditLog).where(eq(auditLog.projectId, projectId))
       .orderBy(desc(auditLog.createdAt)).limit(safeLimit).all()
   }
+
+  // ── 关系 ──────────────────────────────────────────────
+  listRelations(projectId: string): RelationView[] {
+    const rows = this.db.select().from(relations)
+      .where(eq(relations.projectId, projectId))
+      .orderBy(asc(relations.kind), asc(relations.createdAt)).all()
+    const names = new Map<string, string>()
+    for (const entity of this.listEntities(projectId)) names.set(entity.id, entity.name)
+    return rows.map(row => ({
+      ...row,
+      sourceName: names.get(row.sourceId) ?? row.sourceId,
+      targetName: names.get(row.targetId) ?? row.targetId,
+    }))
+  }
+
+  createRelation(input: {
+    projectId: string
+    sourceId: string
+    targetId: string
+    kind: string
+    tension?: string | undefined
+    notes?: string | undefined
+    sinceChapterId?: string | null | undefined
+  }): Relation {
+    this.getProject(input.projectId)
+    const timestamp = now()
+    const row: Relation = {
+      id: id('relation'), projectId: input.projectId, sourceId: input.sourceId, targetId: input.targetId,
+      kind: requireNonEmpty(input.kind, 'kind'), tension: input.tension?.trim() ?? '',
+      notes: input.notes?.trim() ?? '', sinceChapterId: input.sinceChapterId ?? null,
+      status: 'active', version: 1, createdAt: timestamp, updatedAt: timestamp,
+    }
+    this.db.insert(relations).values(row).run()
+    this.audit(row.projectId, 'relation.create', row.id, undefined, row)
+    return row
+  }
+
+  updateRelation(relationId: string, patch: {
+    kind?: string | undefined
+    tension?: string | undefined
+    notes?: string | undefined
+    status?: string | undefined
+    sinceChapterId?: string | null | undefined
+  }, expectedVersion?: number): Relation {
+    const current = this.db.select().from(relations).where(eq(relations.id, relationId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `关系不存在：${relationId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `关系版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      kind: patch.kind === undefined ? current.kind : requireNonEmpty(patch.kind, 'kind'),
+      tension: patch.tension === undefined ? current.tension : patch.tension,
+      notes: patch.notes === undefined ? current.notes : patch.notes,
+      status: patch.status ?? current.status,
+      sinceChapterId: patch.sinceChapterId === undefined ? current.sinceChapterId : patch.sinceChapterId,
+      version: current.version + 1, updatedAt: now(),
+    }
+    this.db.update(relations).set(next).where(and(eq(relations.id, relationId), eq(relations.version, current.version))).run()
+    this.audit(current.projectId, 'relation.update', relationId, current, next)
+    return this.db.select().from(relations).where(eq(relations.id, relationId)).get() as Relation
+  }
+
+  // ── 剧情线 ────────────────────────────────────────────
+  listPlotThreads(projectId: string): PlotThread[] {
+    return this.db.select().from(plotThreads).where(eq(plotThreads.projectId, projectId))
+      .orderBy(asc(plotThreads.kind), asc(plotThreads.createdAt)).all()
+  }
+
+  createPlotThread(input: {
+    projectId: string
+    name: string
+    kind?: string | undefined
+    goal?: string | undefined
+    summary?: string | undefined
+    currentChapterId?: string | undefined
+  }): PlotThread {
+    this.getProject(input.projectId)
+    const timestamp = now()
+    const row: PlotThread = {
+      id: id('thread'), projectId: input.projectId, name: requireNonEmpty(input.name, 'name'),
+      kind: input.kind ?? 'main', goal: input.goal?.trim() ?? '', summary: input.summary?.trim() ?? '',
+      status: 'active', currentChapterId: input.currentChapterId ?? null,
+      version: 1, createdAt: timestamp, updatedAt: timestamp,
+    }
+    this.db.insert(plotThreads).values(row).run()
+    this.audit(row.projectId, 'thread.create', row.id, undefined, row)
+    return row
+  }
+
+  updatePlotThread(threadId: string, patch: {
+    name?: string | undefined
+    kind?: string | undefined
+    goal?: string | undefined
+    summary?: string | undefined
+    status?: string | undefined
+    currentChapterId?: string | null | undefined
+  }, expectedVersion?: number): PlotThread {
+    const current = this.db.select().from(plotThreads).where(eq(plotThreads.id, threadId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `剧情线不存在：${threadId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `剧情线版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      name: patch.name === undefined ? current.name : requireNonEmpty(patch.name, 'name'),
+      kind: patch.kind ?? current.kind,
+      goal: patch.goal === undefined ? current.goal : patch.goal,
+      summary: patch.summary === undefined ? current.summary : patch.summary,
+      status: patch.status ?? current.status,
+      currentChapterId: patch.currentChapterId === undefined ? current.currentChapterId : patch.currentChapterId,
+      version: current.version + 1, updatedAt: now(),
+    }
+    this.db.update(plotThreads).set(next).where(and(eq(plotThreads.id, threadId), eq(plotThreads.version, current.version))).run()
+    this.audit(current.projectId, 'thread.update', threadId, current, next)
+    return this.db.select().from(plotThreads).where(eq(plotThreads.id, threadId)).get() as PlotThread
+  }
+
+  // ── 场景 / 节拍 ───────────────────────────────────────
+  listScenes(chapterId: string): SceneView[] {
+    const chapter = this.getChapter(chapterId)
+    const rows = this.db.select().from(scenes).where(eq(scenes.chapterId, chapterId)).orderBy(asc(scenes.sceneNo)).all()
+    const names = new Map<string, string>()
+    for (const entity of this.listEntities(chapter.projectId)) names.set(entity.id, entity.name)
+    return rows.map(row => ({
+      ...row,
+      castNames: (parseJson(row.castJson, []) as string[]).map(castId => names.get(castId) ?? castId),
+      locationName: row.locationEntityId ? (names.get(row.locationEntityId) ?? row.locationEntityId) : null,
+    }))
+  }
+
+  createScene(input: {
+    chapterId: string
+    sceneNo?: number | undefined
+    beat?: string | undefined
+    goal?: string | undefined
+    conflict?: string | undefined
+    outcome?: string | undefined
+    locationEntityId?: string | null | undefined
+    cast?: string[] | undefined
+    povEntityId?: string | null | undefined
+    notes?: string | undefined
+  }): Scene {
+    const chapter = this.getChapter(input.chapterId)
+    const latest = this.db.select({ sceneNo: scenes.sceneNo }).from(scenes).where(eq(scenes.chapterId, chapter.id))
+      .orderBy(desc(scenes.sceneNo)).limit(1).get()
+    const timestamp = now()
+    const row: Scene = {
+      id: id('scene'), projectId: chapter.projectId, chapterId: chapter.id,
+      sceneNo: input.sceneNo ?? (latest?.sceneNo ?? 0) + 1,
+      beat: input.beat?.trim() ?? '', goal: input.goal?.trim() ?? '', conflict: input.conflict?.trim() ?? '',
+      outcome: input.outcome?.trim() ?? '', locationEntityId: input.locationEntityId ?? null,
+      castJson: JSON.stringify(input.cast ?? []), povEntityId: input.povEntityId ?? null,
+      notes: input.notes?.trim() ?? '', status: 'planned', version: 1,
+      createdAt: timestamp, updatedAt: timestamp,
+    }
+    this.db.insert(scenes).values(row).run()
+    this.audit(chapter.projectId, 'scene.create', row.id, undefined, row)
+    return row
+  }
+
+  updateScene(sceneId: string, patch: {
+    beat?: string | undefined
+    goal?: string | undefined
+    conflict?: string | undefined
+    outcome?: string | undefined
+    locationEntityId?: string | null | undefined
+    cast?: string[] | undefined
+    povEntityId?: string | null | undefined
+    notes?: string | undefined
+    status?: string | undefined
+  }, expectedVersion?: number): Scene {
+    const current = this.db.select().from(scenes).where(eq(scenes.id, sceneId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `场景不存在：${sceneId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `场景版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      beat: patch.beat === undefined ? current.beat : patch.beat,
+      goal: patch.goal === undefined ? current.goal : patch.goal,
+      conflict: patch.conflict === undefined ? current.conflict : patch.conflict,
+      outcome: patch.outcome === undefined ? current.outcome : patch.outcome,
+      locationEntityId: patch.locationEntityId === undefined ? current.locationEntityId : patch.locationEntityId,
+      castJson: patch.cast === undefined ? current.castJson : JSON.stringify(patch.cast),
+      povEntityId: patch.povEntityId === undefined ? current.povEntityId : patch.povEntityId,
+      notes: patch.notes === undefined ? current.notes : patch.notes,
+      status: patch.status ?? current.status,
+      version: current.version + 1, updatedAt: now(),
+    }
+    this.db.update(scenes).set(next).where(and(eq(scenes.id, sceneId), eq(scenes.version, current.version))).run()
+    this.audit(current.projectId, 'scene.update', sceneId, current, next)
+    return this.db.select().from(scenes).where(eq(scenes.id, sceneId)).get() as Scene
+  }
+
+  deleteScene(sceneId: string): { ok: true } {
+    const current = this.db.select().from(scenes).where(eq(scenes.id, sceneId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `场景不存在：${sceneId}`)
+    this.db.delete(scenes).where(eq(scenes.id, sceneId)).run()
+    this.audit(current.projectId, 'scene.delete', sceneId, current, undefined)
+    return { ok: true }
+  }
+
+  // ── 人物状态快照 ───────────────────────────────────────
+  listCharacterStates(characterId: string): CharacterState[] {
+    return this.db.select().from(characterStates).where(eq(characterStates.characterId, characterId))
+      .orderBy(desc(characterStates.createdAt)).all()
+  }
+
+  createCharacterState(input: {
+    characterId: string
+    chapterId?: string | null | undefined
+    summary?: string | undefined
+    state?: Record<string, unknown> | undefined
+  }): CharacterState {
+    const entity = this.getEntity(input.characterId)
+    const row: CharacterState = {
+      id: id('cstate'), projectId: entity.projectId, characterId: entity.id,
+      chapterId: input.chapterId ?? null, summary: input.summary?.trim() ?? '',
+      stateJson: JSON.stringify(input.state ?? {}), createdAt: now(),
+    }
+    this.db.insert(characterStates).values(row).run()
+    this.audit(entity.projectId, 'character_state.create', row.id, undefined, row)
+    return row
+  }
+
+  // ── 素材导入 ──────────────────────────────────────────
+  createIngestBatch(input: { projectId: string; title?: string; sourceText: string; mode?: string; focus?: string; model?: string }): IngestBatch {
+    this.getProject(input.projectId)
+    const row: IngestBatch = {
+      id: id('ingest'), projectId: input.projectId, title: input.title?.trim() ?? '',
+      sourceText: requireNonEmpty(input.sourceText, '素材正文'), mode: input.mode ?? 'propose',
+      status: 'analyzing', focus: input.focus?.trim() ?? '', model: input.model ?? '',
+      statsJson: '{}', error: null, createdAt: now(), appliedAt: null,
+    }
+    this.db.insert(ingestBatches).values(row).run()
+    this.audit(row.projectId, 'ingest.create', row.id, undefined, { title: row.title, chars: row.sourceText.length })
+    return row
+  }
+
+  updateIngestBatch(batchId: string, patch: {
+    status?: string | undefined
+    stats?: unknown
+    error?: string | null | undefined
+    appliedAt?: string | null | undefined
+  }): IngestBatch {
+    const current = this.getIngestBatch(batchId)
+    const next = {
+      status: patch.status ?? current.status,
+      statsJson: patch.stats === undefined ? current.statsJson : JSON.stringify(patch.stats),
+      error: patch.error === undefined ? current.error : patch.error,
+      appliedAt: patch.appliedAt === undefined ? current.appliedAt : patch.appliedAt,
+    }
+    this.db.update(ingestBatches).set(next).where(eq(ingestBatches.id, batchId)).run()
+    return this.getIngestBatch(batchId)
+  }
+
+  getIngestBatch(batchId: string): IngestBatch {
+    const row = this.db.select().from(ingestBatches).where(eq(ingestBatches.id, batchId)).get()
+    if (!row) throw new NovelForgeError('NOT_FOUND', `素材导入批次不存在：${batchId}`)
+    return row
+  }
+
+  listIngestBatches(projectId: string): IngestBatch[] {
+    return this.db.select().from(ingestBatches).where(eq(ingestBatches.projectId, projectId))
+      .orderBy(desc(ingestBatches.createdAt)).limit(50).all()
+  }
+
+  listProposalsByBatch(batchId: string): ChangeProposal[] {
+    return this.db.select().from(changeProposals).where(eq(changeProposals.batchId, batchId))
+      .orderBy(asc(changeProposals.createdAt)).all()
+  }
+
+  /** 按名称或别名解析实体 ID；用于关系提议在「人物与关系同一批导入」时的延迟解析。 */
+  resolveEntityIdByName(projectId: string, name: string | undefined): string | null {
+    const target = name?.trim().toLowerCase()
+    if (!target) return null
+    for (const entity of this.listEntities(projectId)) {
+      if (entity.name.trim().toLowerCase() === target) return entity.id
+      const aliases = parseJson<string[]>(entity.aliasesJson, [])
+      if (aliases.some(alias => alias.trim().toLowerCase() === target)) return entity.id
+    }
+    return null
+  }
+
+  /** 应用一个导入批次里的待审批提议；逐条事务，失败不中止其余，返回成功/失败明细。 */
+  applyIngestBatch(batchId: string, approved: boolean): { applied: string[]; failed: Array<{ id: string; error: string }> } {
+    if (!approved) throw new NovelForgeError('APPROVAL_REQUIRED', '未获得用户批准：应用素材导入必须显式传入 approved: true。')
+    const batch = this.getIngestBatch(batchId)
+    const applied: string[] = []
+    const failed: Array<{ id: string; error: string }> = []
+    // 关系提议依赖两端实体已落库，放在最后应用，避免同批导入时解析不到 ID。
+    const order: Record<string, number> = { entity: 0, thread: 1, foreshadowing: 2, event: 3, relation: 9 }
+    const proposals = this.listProposalsByBatch(batchId)
+      .slice()
+      .sort((left, right) => (order[left.targetType] ?? 5) - (order[right.targetType] ?? 5))
+    for (const proposal of proposals) {
+      if (proposal.status !== 'pending') continue
+      try {
+        this.applyChange(proposal.id, true)
+        applied.push(proposal.id)
+      } catch (error) {
+        failed.push({ id: proposal.id, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    this.updateIngestBatch(batchId, {
+      status: failed.length ? 'partially_applied' : 'applied',
+      appliedAt: now(),
+      stats: { ...(parseJson(batch.statsJson, {}) as Record<string, unknown>), applied: applied.length, failed: failed.length },
+    })
+    this.audit(batch.projectId, 'ingest.apply', batchId, undefined, { applied: applied.length, failed: failed.length })
+    return { applied, failed }
+  }
+
 }

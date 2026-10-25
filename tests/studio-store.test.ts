@@ -296,6 +296,10 @@ describe('NovelStore 人工工作台能力', () => {
       pendingProposals: 1,
       openIssues: 1,
       revisions: 2,
+      relations: 0,
+      threads: 0,
+      scenes: 0,
+      ingestBatches: 0,
     })
     expect(overview.currentChapter?.id).toBe(chapters[0]!.id)
     expect(overview.openIssues.map(issue => issue.chapterId)).toEqual([chapters[0]!.id])

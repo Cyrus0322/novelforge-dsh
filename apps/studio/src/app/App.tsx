@@ -8,6 +8,7 @@ import { OutlinePage } from '../pages/OutlinePage.tsx'
 import { EntitiesPage } from '../pages/EntitiesPage.tsx'
 import { TimelinePage } from '../pages/TimelinePage.tsx'
 import { ForeshadowingPage } from '../pages/ForeshadowingPage.tsx'
+import { IngestPage } from '../pages/IngestPage.tsx'
 import { ChaptersPage } from '../pages/ChaptersPage.tsx'
 import { ChapterWorkspacePage } from '../pages/ChapterWorkspacePage.tsx'
 import { ReviewsPage } from '../pages/ReviewsPage.tsx'
@@ -24,6 +25,7 @@ const NAV_SECTIONS: Array<{
     title: '创作',
     items: [
       { key: '', label: '项目总览', glyph: '◈' },
+      { key: 'ingest', label: '素材导入', glyph: '⇥' },
       { key: 'outline', label: '大纲', glyph: '≣' },
       { key: 'chapters', label: '章节', glyph: '✎' },
     ],
@@ -202,6 +204,7 @@ function RouteView({ projectId, section, chapterId, navigate, projects, projects
   }
   const props = { projectId, navigate }
   if (section === '' || section === 'dashboard') return <DashboardPage {...props} />
+  if (section === 'ingest') return <IngestPage {...props} />
   if (section === 'outline') return <OutlinePage {...props} />
   if (section === 'entities') return <EntitiesPage {...props} />
   if (section === 'timeline') return <TimelinePage {...props} />

@@ -109,6 +109,12 @@ export function buildRoutes(deps: RouteDeps): Route[] {
       premise: optionalString(body, 'premise'),
       styleGuide: optionalString(body, 'styleGuide'),
       status: optionalString(body, 'status'),
+      pov: optionalString(body, 'pov'),
+      tense: optionalString(body, 'tense'),
+      chapterWordsMin: optionalNumber(body, 'chapterWordsMin'),
+      chapterWordsMax: optionalNumber(body, 'chapterWordsMax'),
+      targetChapters: optionalNumber(body, 'targetChapters'),
+      themes: stringArray(body, 'themes'),
     }, optionalNumber(body, 'expectedVersion'))
   })
 
@@ -152,6 +158,16 @@ export function buildRoutes(deps: RouteDeps): Route[] {
       summary: optionalString(body, 'summary'),
       attributes: attributes(body, 'attributes'),
       status: optionalString(body, 'status'),
+      role: optionalString(body, 'role'),
+      goal: optionalString(body, 'goal'),
+      motivation: optionalString(body, 'motivation'),
+      flaw: optionalString(body, 'flaw'),
+      secret: optionalString(body, 'secret'),
+      voice: optionalString(body, 'voice'),
+      arc: optionalString(body, 'arc'),
+      aliases: stringArray(body, 'aliases'),
+      firstAppearanceChapterId: optionalString(body, 'firstAppearanceChapterId'),
+      importance: optionalNumber(body, 'importance'),
     })
   })
 
@@ -165,7 +181,32 @@ export function buildRoutes(deps: RouteDeps): Route[] {
       summary: optionalString(body, 'summary'),
       attributes: attributes(body, 'attributes'),
       status: optionalString(body, 'status'),
+      role: optionalString(body, 'role'),
+      goal: optionalString(body, 'goal'),
+      motivation: optionalString(body, 'motivation'),
+      flaw: optionalString(body, 'flaw'),
+      secret: optionalString(body, 'secret'),
+      voice: optionalString(body, 'voice'),
+      arc: optionalString(body, 'arc'),
+      aliases: stringArray(body, 'aliases'),
+      firstAppearanceChapterId: body.firstAppearanceChapterId === undefined
+        ? undefined
+        : (body.firstAppearanceChapterId === null ? null : String(body.firstAppearanceChapterId)),
+      importance: optionalNumber(body, 'importance'),
     }, optionalNumber(body, 'expectedVersion'))
+  })
+
+  // ── 人物状态快照（按章）────────────────────────────────
+  add('GET', '/api/entities/:entityId/states', context => store.listCharacterStates(context.params.entityId as string))
+
+  add('POST', '/api/entities/:entityId/states', async context => {
+    const body = await context.body()
+    return store.createCharacterState({
+      characterId: context.params.entityId as string,
+      chapterId: optionalString(body, 'chapterId'),
+      summary: optionalString(body, 'summary'),
+      state: attributes(body, 'state'),
+    })
   })
 
   // ── 大纲 ───────────────────────────────────────────────
@@ -378,6 +419,126 @@ export function buildRoutes(deps: RouteDeps): Route[] {
 
   // ── 工作流 ─────────────────────────────────────────────
   add('GET', '/api/projects/:projectId/workflows', context => store.listWorkflowRuns(context.params.projectId as string))
+
+
+  // ── 关系 ──────────────────────────────────────────────
+  add('GET', '/api/projects/:projectId/relations', context => store.listRelations(context.params.projectId as string))
+
+  add('POST', '/api/projects/:projectId/relations', async context => {
+    const body = await context.body()
+    return store.createRelation({
+      projectId: context.params.projectId as string,
+      sourceId: requireString(body, 'sourceId', '关系起点'),
+      targetId: requireString(body, 'targetId', '关系终点'),
+      kind: optionalString(body, 'kind') ?? 'other',
+      tension: optionalString(body, 'tension'),
+      notes: optionalString(body, 'notes'),
+      sinceChapterId: optionalString(body, 'sinceChapterId'),
+    })
+  })
+
+  add('PATCH', '/api/relations/:relationId', async context => {
+    const body = await context.body()
+    return store.updateRelation(context.params.relationId as string, {
+      kind: optionalString(body, 'kind'),
+      tension: optionalString(body, 'tension'),
+      notes: optionalString(body, 'notes'),
+      status: optionalString(body, 'status'),
+      sinceChapterId: body.sinceChapterId === undefined ? undefined : (body.sinceChapterId === null ? null : String(body.sinceChapterId)),
+    }, optionalNumber(body, 'expectedVersion'))
+  })
+
+  // ── 剧情线 ────────────────────────────────────────────
+  add('GET', '/api/projects/:projectId/threads', context => store.listPlotThreads(context.params.projectId as string))
+
+  add('POST', '/api/projects/:projectId/threads', async context => {
+    const body = await context.body()
+    return store.createPlotThread({
+      projectId: context.params.projectId as string,
+      name: requireString(body, 'name', '剧情线名称'),
+      kind: optionalString(body, 'kind'),
+      goal: optionalString(body, 'goal'),
+      summary: optionalString(body, 'summary'),
+      currentChapterId: optionalString(body, 'currentChapterId'),
+    })
+  })
+
+  add('PATCH', '/api/threads/:threadId', async context => {
+    const body = await context.body()
+    return store.updatePlotThread(context.params.threadId as string, {
+      name: optionalString(body, 'name'),
+      kind: optionalString(body, 'kind'),
+      goal: optionalString(body, 'goal'),
+      summary: optionalString(body, 'summary'),
+      status: optionalString(body, 'status'),
+      currentChapterId: body.currentChapterId === undefined ? undefined : (body.currentChapterId === null ? null : String(body.currentChapterId)),
+    }, optionalNumber(body, 'expectedVersion'))
+  })
+
+  // ── 场景 / 节拍 ───────────────────────────────────────
+  add('GET', '/api/chapters/:chapterId/scenes', context => store.listScenes(context.params.chapterId as string))
+
+  add('POST', '/api/chapters/:chapterId/scenes', async context => {
+    const body = await context.body()
+    return store.createScene({
+      chapterId: context.params.chapterId as string,
+      sceneNo: optionalNumber(body, 'sceneNo'),
+      beat: optionalString(body, 'beat'),
+      goal: optionalString(body, 'goal'),
+      conflict: optionalString(body, 'conflict'),
+      outcome: optionalString(body, 'outcome'),
+      locationEntityId: optionalString(body, 'locationEntityId'),
+      cast: stringArray(body, 'cast'),
+      povEntityId: optionalString(body, 'povEntityId'),
+      notes: optionalString(body, 'notes'),
+    })
+  })
+
+  add('PATCH', '/api/scenes/:sceneId', async context => {
+    const body = await context.body()
+    return store.updateScene(context.params.sceneId as string, {
+      beat: optionalString(body, 'beat'),
+      goal: optionalString(body, 'goal'),
+      conflict: optionalString(body, 'conflict'),
+      outcome: optionalString(body, 'outcome'),
+      locationEntityId: optionalString(body, 'locationEntityId'),
+      cast: stringArray(body, 'cast'),
+      povEntityId: optionalString(body, 'povEntityId'),
+      notes: optionalString(body, 'notes'),
+      status: optionalString(body, 'status'),
+    }, optionalNumber(body, 'expectedVersion'))
+  })
+
+  add('DELETE', '/api/scenes/:sceneId', context => store.deleteScene(context.params.sceneId as string))
+
+  // ── 素材导入 ──────────────────────────────────────────
+  add('POST', '/api/projects/:projectId/ingest', async context => {
+    ai()
+    const body = await context.body()
+    const mode = optionalString(body, 'mode')
+    if (mode !== undefined && mode !== 'propose' && mode !== 'apply') {
+      throw new NovelForgeError('INVALID_INPUT', 'mode 只能是 propose 或 apply。')
+    }
+    return service.ingestMaterial(context.params.projectId as string, {
+      material: requireString(body, 'material', '素材正文'),
+      title: optionalString(body, 'title'),
+      focus: optionalString(body, 'focus'),
+      ...(mode === undefined ? {} : { mode: mode as 'propose' | 'apply' }),
+    })
+  })
+
+  add('GET', '/api/projects/:projectId/ingest-batches', context => store.listIngestBatches(context.params.projectId as string))
+
+  add('GET', '/api/ingest-batches/:batchId', context => {
+    const batch = store.getIngestBatch(context.params.batchId as string)
+    return { batch, proposals: store.listProposalsByBatch(batch.id) }
+  })
+
+  add('POST', '/api/ingest-batches/:batchId/apply', context => {
+    const batch = store.getIngestBatch(context.params.batchId as string)
+    const result = store.applyIngestBatch(batch.id, true)
+    return { ...result, batch: store.getIngestBatch(batch.id) }
+  })
 
   return routes
 }

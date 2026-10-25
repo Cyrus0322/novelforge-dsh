@@ -229,6 +229,7 @@ describe('本地工作台 HTTP 服务', () => {
     expect(overview.counts).toEqual({
       chapters: 0, finalizedChapters: 0, entities: 0, events: 0,
       foreshadowingOpen: 0, pendingProposals: 0, openIssues: 0, revisions: 0,
+      relations: 0, threads: 0, scenes: 0, ingestBatches: 0,
     })
     expect(overview.currentChapter).toBeNull()
     expect(overview.lastFinalized).toBeNull()

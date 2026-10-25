@@ -73,17 +73,49 @@ export const reviewResultSchema = z.object({
 export type ReviewResult = z.infer<typeof reviewResultSchema>
 
 export const changePayloadSchema = z.object({
+  // 实体通用
   kind: entityKindSchema.optional(),
   name: z.string().min(1).optional(),
   summary: z.string().optional(),
   attributes: attributesSchema.optional(),
   status: factStatusSchema.optional(),
+  // 人物档案
+  role: z.string().optional(),
+  goal: z.string().optional(),
+  motivation: z.string().optional(),
+  flaw: z.string().optional(),
+  secret: z.string().optional(),
+  voice: z.string().optional(),
+  arc: z.string().optional(),
+  aliases: z.array(z.string()).optional(),
+  firstAppearanceChapterId: z.string().nullable().optional(),
+  importance: z.number().int().min(1).max(5).optional(),
+  // 事件
   eventTime: z.string().optional(),
+  participants: z.array(z.string()).optional(),
+  locationEntityId: z.string().nullable().optional(),
+  // 伏笔
   description: z.string().optional(),
+  kind2: z.string().optional(),
   plantChapterId: z.string().nullable().optional(),
   payoffChapterId: z.string().nullable().optional(),
+  notes: z.string().optional(),
+  // 伏笔类型（避免和 kind 的实体类型枚举冲突）
+  category: z.string().optional(),
+  // 关系与剧情线（素材导入会用到）
+  sourceId: z.string().optional(),
+  targetId: z.string().optional(),
+  sourceName: z.string().optional(),
+  targetName: z.string().optional(),
+  relationType: z.string().optional(),
+  tension: z.string().optional(),
+  threadKind: z.enum(['main', 'sub', 'romance', 'mystery', 'revenge', 'growth']).optional(),
 }).refine(
-  value => Boolean(value.name?.trim() || value.summary?.trim() || value.description?.trim() || value.eventTime?.trim()),
+  value => Boolean(
+    value.name?.trim() || value.summary?.trim() || value.description?.trim() || value.eventTime?.trim()
+    || value.goal?.trim() || value.role?.trim() || value.notes?.trim()
+    || value.sourceName?.trim() || value.relationType?.trim() || value.threadKind?.trim(),
+  ),
   '变更 payload 至少需要 name / summary / description / eventTime 之一，不能是空对象。',
 )
 

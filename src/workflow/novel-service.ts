@@ -8,6 +8,8 @@ import { DeepSeekClient } from '../llm/client.js'
 import type { LlmClient } from '../llm/client.js'
 import { completeStructured } from '../llm/structured.js'
 import { ContextBuilder } from '../retrieval/context.js'
+import { runIngest } from './ingest.js'
+import type { IngestInput, IngestOutcome } from './ingest.js'
 import type { ContextPack } from '../retrieval/context.js'
 import type { RuntimeConfig } from '../shared/config.js'
 import { NovelForgeError, errorMessage, requireNonEmpty } from '../shared/errors.js'
@@ -171,6 +173,15 @@ export class NovelService {
       const review = await this.reviewChapter(revision.id, signal)
       return { revision, review }
     }, { revisionId, issueIds })
+  }
+
+  /** 素材 → 资料库：抽取结构化条目并生成待审批提议（mode='apply' 时立即应用）。 */
+  async ingestMaterial(projectId: string, input: IngestInput, signal?: AbortSignal): Promise<IngestOutcome> {
+    return runIngest({ store: this.store, llm: this.llm, config: this.config }, projectId, input, signal)
+  }
+
+  applyIngestBatch(batchId: string, approved: boolean): ReturnType<NovelStore['applyIngestBatch']> {
+    return this.store.applyIngestBatch(batchId, approved)
   }
 
   finalizeChapter(revisionId: string, approved: boolean, approvedChangeIds: string[] = [], allowUnreviewed = false): Chapter {

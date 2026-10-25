@@ -8,6 +8,12 @@ export interface Project {
   premise: string
   styleGuide: string
   status: string
+  pov: string
+  tense: string
+  chapterWordsMin: number
+  chapterWordsMax: number
+  targetChapters: number
+  themesJson: string
   version: number
   createdAt: string
   updatedAt: string
@@ -23,6 +29,16 @@ export interface Entity {
   status: string
   sourceChapterId: string | null
   sourceRevisionId: string | null
+  role: string
+  goal: string
+  motivation: string
+  flaw: string
+  secret: string
+  voice: string
+  arc: string
+  aliasesJson: string
+  firstAppearanceChapterId: string | null
+  importance: number
   version: number
   createdAt: string
   updatedAt: string
@@ -50,6 +66,9 @@ export interface Chapter {
   title: string
   status: string
   currentRevisionId: string | null
+  summary: string
+  povEntityId: string | null
+  targetWords: number
   version: number
   createdAt: string
   updatedAt: string
@@ -79,6 +98,9 @@ export interface StoryEvent {
   summary: string
   status: string
   sourceRevisionId: string | null
+  participantsJson: string
+  locationEntityId: string | null
+  importance: number
   version: number
   createdAt: string
   updatedAt: string
@@ -92,6 +114,9 @@ export interface Foreshadowing {
   plantChapterId: string | null
   payoffChapterId: string | null
   status: string
+  kind: string
+  importance: number
+  notes: string
   version: number
   createdAt: string
   updatedAt: string
@@ -148,6 +173,9 @@ export interface ChangeProposal {
   operation: 'create' | 'update' | string
   payloadJson: string
   expectedVersion: number | null
+  batchId: string | null
+  source: string
+  confidence: number | null
   status: string
   createdAt: string
   appliedAt: string | null
@@ -223,6 +251,10 @@ export interface ProjectOverview {
     pendingProposals: number
     openIssues: number
     revisions: number
+    relations: number
+    threads: number
+    scenes: number
+    ingestBatches: number
   }
   currentChapter: Chapter | null
   openIssues: Array<ReviewIssue & { chapterId: string; chapterNo: number; chapterTitle: string }>
@@ -251,4 +283,95 @@ export interface CompareResult {
   leftId: string
   rightId: string
   changes: DiffChange[]
+}
+
+export interface Relation {
+  id: string
+  projectId: string
+  sourceId: string
+  targetId: string
+  kind: string
+  tension: string
+  notes: string
+  sinceChapterId: string | null
+  status: string
+  version: number
+  createdAt: string
+  updatedAt: string
+  sourceName: string
+  targetName: string
+}
+
+export interface PlotThread {
+  id: string
+  projectId: string
+  name: string
+  kind: 'main' | 'sub' | 'romance' | 'mystery' | 'revenge' | 'growth' | string
+  goal: string
+  summary: string
+  status: string
+  currentChapterId: string | null
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Scene {
+  id: string
+  projectId: string
+  chapterId: string
+  sceneNo: number
+  beat: string
+  goal: string
+  conflict: string
+  outcome: string
+  locationEntityId: string | null
+  castJson: string
+  povEntityId: string | null
+  notes: string
+  status: string
+  version: number
+  createdAt: string
+  updatedAt: string
+  castNames: string[]
+  locationName: string | null
+}
+
+export interface IngestStats {
+  entities: number
+  relations: number
+  events: number
+  foreshadowing: number
+  threads: number
+  projectPatch: number
+  dropped: number
+  conflicts: number
+  droppedReasons: Record<string, number>
+  conflictList?: Array<{ type: string; description: string; evidence?: string }>
+  truncated?: boolean
+  estimatedTokens?: number
+  applied?: number
+  failed?: number
+}
+
+export interface IngestBatch {
+  id: string
+  projectId: string
+  title: string
+  sourceText: string
+  mode: string
+  status: string
+  focus: string
+  model: string
+  statsJson: string
+  error: string | null
+  createdAt: string
+  appliedAt: string | null
+}
+
+export interface IngestOutcome {
+  batch: IngestBatch
+  stats: IngestStats
+  proposals: ChangeProposal[]
+  applied?: { applied: string[]; failed: Array<{ id: string; error: string }> }
 }

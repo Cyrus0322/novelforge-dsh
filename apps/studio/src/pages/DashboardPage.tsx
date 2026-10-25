@@ -1,25 +1,118 @@
+import { useMemo } from 'react'
 import { api } from '../lib/api.ts'
 import type { PageProps } from '../app/types.ts'
+import type { IngestStats } from '../lib/types.ts'
 import { useResource } from '../lib/hooks.ts'
-import { countWords, formatTime, label, relativeTime, severityTone, statusTone, truncate } from '../lib/format.ts'
-import { Badge, Card, Empty, ErrorBox, Loading, SectionTitle, Stat, StatusBadge } from '../components/ui.tsx'
+import { countWords, formatTime, label, relativeTime, safeJson, severityTone, statusTone, truncate } from '../lib/format.ts'
+import type { Tone } from '../lib/format.ts'
+import { Badge, Card, Empty, ErrorBox, Kv, Loading, SectionTitle, Stat, StatusBadge } from '../components/ui.tsx'
+
+const THREAD_KIND_LABELS: Record<string, string> = {
+  main: '主线',
+  sub: '支线',
+  romance: '感情线',
+  mystery: '悬疑线',
+  revenge: '复仇线',
+  growth: '成长线',
+}
+
+const BATCH_STATUS_LABELS: Record<string, string> = {
+  analyzing: '整理中',
+  ready: '待审批',
+  applying: '应用中',
+  applied: '已应用',
+  partially_applied: '部分应用',
+  failed: '失败',
+}
+
+const BATCH_MODE_LABELS: Record<string, string> = {
+  propose: '只生成提议',
+  apply: '整理并应用',
+}
+
+function threadKindText(kind: string): string {
+  return THREAD_KIND_LABELS[kind] ?? label(kind)
+}
+
+function threadKindTone(kind: string): Tone {
+  switch (kind) {
+    case 'main':
+      return 'accent'
+    case 'sub':
+      return 'info'
+    case 'romance':
+    case 'mystery':
+    case 'revenge':
+    case 'growth':
+      return 'muted'
+    default:
+      return 'muted'
+  }
+}
+
+function batchStatusText(status: string): string {
+  return BATCH_STATUS_LABELS[status] ?? label(status)
+}
+
+function batchTone(status: string): Tone {
+  switch (status) {
+    case 'ready':
+    case 'partially_applied':
+      return 'warn'
+    case 'applied':
+      return 'ok'
+    case 'failed':
+      return 'danger'
+    case 'analyzing':
+    case 'applying':
+      return 'info'
+    default:
+      return 'muted'
+  }
+}
+
+function parseStats(json: string): Partial<IngestStats> {
+  const parsed = safeJson<unknown>(json, {})
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+  return parsed as Partial<IngestStats>
+}
+
+function extractedCount(stats: Partial<IngestStats>): number {
+  return (stats.entities ?? 0) + (stats.relations ?? 0) + (stats.events ?? 0)
+    + (stats.foreshadowing ?? 0) + (stats.threads ?? 0)
+}
 
 export function DashboardPage({ projectId, navigate }: PageProps) {
   const overview = useResource(() => api.getOverview(projectId), [projectId])
+  const threads = useResource(() => api.listThreads(projectId), [projectId])
+  const relations = useResource(() => api.listRelations(projectId), [projectId])
+  const batches = useResource(() => api.listIngestBatches(projectId), [projectId])
   const data = overview.data
+
+  const project = data?.project
+  const themes = useMemo(() => {
+    const parsed = safeJson<unknown>(project?.themesJson, [])
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0) : []
+  }, [project?.themesJson])
 
   if (overview.loading && !data) return <Loading text="正在汇总项目状态…" />
   if (overview.error) return <ErrorBox error={overview.error} onRetry={overview.reload} />
-  if (!data) return <Empty title="没有数据" hint="项目状态接口没有返回内容。" />
+  if (!data || !project) return <Empty title="没有数据" hint="项目状态接口没有返回内容。" />
 
-  const { counts, project } = data
+  const { counts } = data
   const goto = (path: string): void => navigate(`/p/${encodeURIComponent(projectId)}/${path}`)
   const openChapter = (chapterId: string): void => navigate(`/p/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}`)
   const progress = counts.chapters ? Math.round((counts.finalizedChapters / counts.chapters) * 100) : 0
 
+  const threadList = threads.data ?? []
+  const relationList = relations.data ?? []
+  const batchList = batches.data ?? []
+  const stalledThreads = threadList.filter(thread => thread.currentChapterId === null && thread.status !== 'archived').length
+
   const todos: Array<{ text: string; action: string; label: string }> = []
   if (!counts.chapters) todos.push({ text: '还没有章节大纲，先把全书或本卷拆成章。', action: 'outline', label: '去规划大纲' })
   if (!counts.entities) todos.push({ text: '资料库还是空的，人物的动机和能力没有落成事实。', action: 'entities', label: '去建人物' })
+  if (!counts.relations || !counts.threads) todos.push({ text: '还没有人物关系或剧情线，写作上下文会缺少冲突与推进方向。', action: 'entities', label: '去补资料' })
   if (counts.pendingProposals > 0) todos.push({ text: `有 ${counts.pendingProposals} 条 AI 提出的资料变更等待你批准。`, action: 'proposals', label: '去审批' })
   if (counts.openIssues > 0) todos.push({ text: `有 ${counts.openIssues} 个 major/critical 审查问题未解决，会阻断定稿。`, action: 'reviews', label: '去处理' })
 
@@ -40,6 +133,10 @@ export function DashboardPage({ projectId, navigate }: PageProps) {
         <Stat label="进度" value={`${progress}%`} hint={<div className="meter" style={{ marginTop: 6 }}><span style={{ width: `${progress}%` }} /></div>} tone="accent" />
         <Stat label="人物与设定" value={counts.entities} hint="confirmed 才算正式事实" />
         <Stat label="事件" value={counts.events} />
+        <Stat label="剧情线" value={counts.threads} hint="主线 / 支线" tone={counts.threads ? undefined : 'warn'} />
+        <Stat label="人物关系" value={counts.relations} hint="进入写作上下文" />
+        <Stat label="场景" value={counts.scenes} hint="章节内节拍" />
+        <Stat label="素材批次" value={counts.ingestBatches} hint="历史导入" onClick={() => goto('ingest')} />
         <Stat label="未回收伏笔" value={counts.foreshadowingOpen} tone={counts.foreshadowingOpen ? 'warn' : undefined} />
         <Stat label="待审批变更" value={counts.pendingProposals} tone={counts.pendingProposals ? 'warn' : undefined} onClick={() => goto('proposals')} />
         <Stat label="未解决审查问题" value={counts.openIssues} tone={counts.openIssues ? 'danger' : undefined} onClick={() => goto('reviews')} />
@@ -49,7 +146,7 @@ export function DashboardPage({ projectId, navigate }: PageProps) {
         <Card title="下一步" subtitle="按你自己的工作节奏，不必全部清空">
           <div className="stack-sm">
             {todos.map(todo => (
-              <div key={todo.action} className="row-wrap" style={{ justifyContent: 'space-between', borderBottom: '1px solid var(--line-soft)', paddingBottom: 8 }}>
+              <div key={todo.text} className="row-wrap" style={{ justifyContent: 'space-between', borderBottom: '1px solid var(--line-soft)', paddingBottom: 8 }}>
                 <span className="small dim">{todo.text}</span>
                 <button type="button" className="btn btn-sm" onClick={() => goto(todo.action)}>{todo.label}</button>
               </div>
@@ -57,6 +154,96 @@ export function DashboardPage({ projectId, navigate }: PageProps) {
           </div>
         </Card>
       )}
+
+      <SectionTitle title="创作脉络" hint="关系与剧情线决定冲突和推进方向，会进入写作上下文" />
+
+      <div className="grid-2">
+        <Card
+          title="剧情线"
+          subtitle="主线 / 支线 / 感情线；未推进到任何章节的会标黄"
+          actions={<button type="button" className="btn btn-sm btn-ghost" disabled={threads.loading} onClick={threads.reload}>刷新</button>}
+        >
+          {threads.error ? (
+            <ErrorBox error={threads.error} onRetry={threads.reload} />
+          ) : threads.loading && !threads.data ? (
+            <Loading text="正在载入剧情线…" />
+          ) : threadList.length === 0 ? (
+            <Empty
+              title="还没有剧情线"
+              hint="把主线目标、支线伏笔落成剧情线；素材导入会自动抽取，也可以之后在资料库维护。"
+              action={<button type="button" className="btn btn-sm" onClick={() => goto('ingest')}>去素材导入</button>}
+            />
+          ) : (
+            <div className="stack-sm">
+              <div className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                <span className="tiny muted">{threadList.length} 条 · 未推进 {stalledThreads} 条</span>
+              </div>
+              <div className="list">
+                {threadList.slice(0, 8).map(thread => {
+                  const stalled = thread.currentChapterId === null && thread.status !== 'archived'
+                  return (
+                    <div key={thread.id} className="list-item" style={{ cursor: 'default' }}>
+                      <div className="list-item-main">
+                        <div className="list-item-title">
+                          <Badge tone={threadKindTone(thread.kind)}>{threadKindText(thread.kind)}</Badge>
+                          <span>{truncate(thread.name, 28)}</span>
+                          {stalled && <Badge tone="warn">未推进</Badge>}
+                        </div>
+                        <div className="list-item-meta">
+                          {thread.goal.trim() ? `目标：${truncate(thread.goal, 60)}` : '（没写目标，建议补一句：这条线要推进到什么结果）'}
+                        </div>
+                      </div>
+                      <StatusBadge status={thread.status} />
+                    </div>
+                  )
+                })}
+              </div>
+              {threadList.length > 8 && <span className="tiny muted">还有 {threadList.length - 8} 条未显示。</span>}
+            </div>
+          )}
+        </Card>
+
+        <Card
+          title="人物关系"
+          subtitle="源 → 目标（类型）+ 张力；写作时会作为冲突依据"
+          actions={<button type="button" className="btn btn-sm btn-ghost" disabled={relations.loading} onClick={relations.reload}>刷新</button>}
+        >
+          {relations.error ? (
+            <ErrorBox error={relations.error} onRetry={relations.reload} />
+          ) : relations.loading && !relations.data ? (
+            <Loading text="正在载入人物关系…" />
+          ) : relationList.length === 0 ? (
+            <Empty
+              title="还没有人物关系"
+              hint="关系决定冲突与对白语气：师徒、宿敌、利益同盟都会影响写作。去人物页看看，或让素材导入抽一批。"
+              action={<button type="button" className="btn btn-sm" onClick={() => goto('entities')}>去人物页</button>}
+            />
+          ) : (
+            <div className="stack-sm">
+              <span className="tiny muted">{relationList.length} 条关系</span>
+              <div className="list">
+                {relationList.slice(0, 8).map(relation => (
+                  <div key={relation.id} className="list-item" style={{ cursor: 'default' }}>
+                    <div className="list-item-main">
+                      <div className="list-item-title">
+                        <span>{truncate(relation.sourceName, 14)}</span>
+                        <span className="muted">→</span>
+                        <span>{truncate(relation.targetName, 14)}</span>
+                        <Badge tone="info">{relation.kind || '关系'}</Badge>
+                        <StatusBadge status={relation.status} />
+                      </div>
+                      <div className="list-item-meta">
+                        {relation.tension.trim() ? `张力：${truncate(relation.tension, 70)}` : '（没写张力，补一句「谁欠谁 / 谁恨谁」会让对白更准）'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {relationList.length > 8 && <span className="tiny muted">还有 {relationList.length - 8} 条未显示。</span>}
+            </div>
+          )}
+        </Card>
+      </div>
 
       <div className="split">
         <div className="stack">
@@ -119,9 +306,82 @@ export function DashboardPage({ projectId, navigate }: PageProps) {
               <Empty title="还没有定稿章节" hint="定稿必须由作者确认；在章节工作台里完成后点「定稿」。" />
             )}
           </Card>
+
+          <Card
+            title="最近导入"
+            subtitle="素材整理的批次；待审批的可以回去一次性应用"
+            actions={<button type="button" className="btn btn-sm btn-ghost" onClick={() => goto('ingest')}>打开素材导入</button>}
+          >
+            {batches.error ? (
+              <ErrorBox error={batches.error} onRetry={batches.reload} />
+            ) : batches.loading && !batches.data ? (
+              <Loading text="正在载入导入批次…" />
+            ) : batchList.length === 0 ? (
+              <Empty
+                title="还没有素材导入"
+                hint="把人物小传、章节摘要或设定文档丢进素材导入页，AI 会抽成待审批的结构化资料。"
+                action={<button type="button" className="btn btn-sm" onClick={() => goto('ingest')}>去导入素材</button>}
+              />
+            ) : (
+              <div className="list">
+                {batchList.slice(0, 3).map(batch => {
+                  const stats = parseStats(batch.statsJson)
+                  return (
+                    <div
+                      key={batch.id}
+                      role="button"
+                      tabIndex={0}
+                      className="list-item"
+                      onClick={() => goto('ingest')}
+                      onKeyDown={event => { if (event.key === 'Enter') goto('ingest') }}
+                    >
+                      <div className="list-item-main">
+                        <div className="list-item-title">
+                          <span>{truncate(batch.title || '未命名素材', 24)}</span>
+                          <Badge tone={batchTone(batch.status)} dot>{batchStatusText(batch.status)}</Badge>
+                        </div>
+                        <div className="list-item-meta">
+                          {BATCH_MODE_LABELS[batch.mode] ?? batch.mode} · 抽取 {extractedCount(stats)} 条 · {relativeTime(batch.createdAt)}
+                        </div>
+                      </div>
+                      <div className="list-item-actions">
+                        <span className="tiny muted">查看</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </Card>
         </div>
 
         <div className="stack">
+          <Card title="作品契约" subtitle="写作与素材整理共用的作品级约束">
+            <Kv rows={[
+              { key: '叙述视角', value: project.pov || '—' },
+              { key: '时态', value: project.tense || '—' },
+              {
+                key: '章节字数',
+                value: project.chapterWordsMin || project.chapterWordsMax
+                  ? `${project.chapterWordsMin || '—'} – ${project.chapterWordsMax || '—'} 字`
+                  : '—',
+              },
+              { key: '目标章数', value: project.targetChapters > 0 ? `${project.targetChapters} 章` : '—' },
+              {
+                key: '主题',
+                value: themes.length ? (
+                  <span className="row-wrap" style={{ gap: 5 }}>
+                    {themes.map(theme => <span key={theme} className="chip">{theme}</span>)}
+                  </span>
+                ) : '—',
+              },
+            ]} />
+            <div className="small muted" style={{ marginTop: 10 }}>
+              这些契约会约束写作与素材整理：人物深度档案、人物关系、剧情线、本章场景已进入写作上下文，POV / 时态 / 章节字数 / 主题作为作品级契约一起参与生成约束。
+              留空的字段不会进上下文，可用素材导入的 apply 模式自动补齐。
+            </div>
+          </Card>
+
           <Card title="待处理审查问题" subtitle="major / critical 会切断定稿路径" actions={<button type="button" className="btn btn-sm btn-ghost" onClick={() => goto('reviews')}>全部</button>}>
             {data.openIssues.length ? (
               <div className="stack-sm">

@@ -372,6 +372,51 @@ export function registerTools(ctx: Context, service: NovelService, config: Runti
     execute: args => service.store.listWorkflowRuns(args.project_id),
   })
   registerTool({
+    name: 'novel_ingest_material',
+    description: '把作者给的零散素材（设定笔记/人物小传/剧情梗概/正文片段）抽成结构化资料：人物、关系、事件、伏笔、剧情线。每条都必须能在素材中逐字找到证据，否则丢弃；结果默认进入待审批提议，不会直接改正式资料。',
+    parameters: {
+      project_id: { type: 'string', required: true },
+      material: { type: 'string', required: true, description: '素材原文（至少 20 字）' },
+      title: { type: 'string', description: '这批素材的标题，便于日后回溯' },
+      focus: { type: 'string', description: '本次整理重点，例如「只抽人物与势力」' },
+      mode: { type: 'string', enum: ['propose', 'apply'], description: 'propose=生成待审批提议（默认）；apply=同时应用' },
+    },
+    timeoutMs: aiTimeout * 2,
+    execute: (args, exec) => service.ingestMaterial(args.project_id, {
+      material: args.material,
+      ...(args.title === undefined ? {} : { title: args.title }),
+      ...(args.focus === undefined ? {} : { focus: args.focus }),
+      ...(args.mode === undefined ? {} : { mode: args.mode === 'apply' ? 'apply' as const : 'propose' as const }),
+    }, exec.signal),
+  })
+  registerTool({
+    name: 'novel_list_ingest_batches',
+    description: '查看素材导入批次：状态、抽取数量、被丢弃条目与原因、内部矛盾。',
+    parameters: {
+      project_id: { type: 'string', required: true },
+      batch_id: { type: 'string', description: '给了就返回该批次详情与提议列表' },
+    },
+    execute: args => {
+      if (args.batch_id) {
+        const batch = service.store.getIngestBatch(args.batch_id)
+        return { batch, proposals: service.store.listProposalsByBatch(batch.id) }
+      }
+      return service.store.listIngestBatches(args.project_id)
+    },
+  })
+  registerTool({
+    name: 'novel_apply_ingest_batch',
+    description: '请求用户一次性批准后，把一个素材导入批次的提议全部应用到正式资料，并写审计日志。',
+    parameters: { batch_id: { type: 'string', required: true } },
+    timeoutMs: aiTimeout,
+    execute: async (args, exec) => {
+      const batch = service.store.getIngestBatch(args.batch_id)
+      const pending = service.store.listProposalsByBatch(batch.id).filter(item => item.status === 'pending')
+      await approve(ctx, exec, 'novel_apply_ingest_batch', `应用素材导入批次「${batch.title || batch.id}」的 ${pending.length} 条提议到正式资料库。`)
+      return service.applyIngestBatch(batch.id, true)
+    },
+  })
+  registerTool({
     name: 'novel_export_markdown',
     description: '导出仅包含已定稿章节的 Markdown；草稿不会混入。',
     parameters: { project_id: { type: 'string', required: true } },

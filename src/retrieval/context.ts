@@ -1,4 +1,4 @@
-import type { Chapter, ChapterRevision, Entity, Foreshadowing, Outline, StoryEvent } from '../database/store.js'
+import type { Chapter, ChapterRevision, Entity, Foreshadowing, Outline, Project, StoryEvent } from '../database/store.js'
 import { NovelStore } from '../database/store.js'
 import type { RuntimeConfig } from '../shared/config.js'
 
@@ -59,10 +59,35 @@ export function truncateToTokens(text: string, budget: number): { text: string; 
   return { text: `${head}${marker}${tail}`, truncated: true }
 }
 
-function entityLines(rows: Entity[]): { text: string; sources: ContextSource[] } {
+function entityLines(rows: Entity[], rich = false): { text: string; sources: ContextSource[] } {
   return {
-    text: rows.map(row => `- [${row.status}] ${row.name}（${row.kind}）：${row.summary}\n  属性：${row.attributesJson} [来源:${row.id}]`).join('\n'),
+    text: rows.map(row => {
+      const head = `- [${row.status}] ${row.name}（${row.kind}）：${row.summary}`
+      if (!rich) return `${head}\n  属性：${row.attributesJson} [来源:${row.id}]`
+      // 人物深度档案：这些字段决定"会不会写歪"，比 attributes 更重要。
+      const details: string[] = []
+      if (row.role) details.push(`定位：${row.role}`)
+      if (row.goal) details.push(`目标：${row.goal}`)
+      if (row.motivation) details.push(`动机：${row.motivation}`)
+      if (row.flaw) details.push(`缺陷：${row.flaw}`)
+      if (row.secret) details.push(`秘密：${row.secret}`)
+      if (row.voice) details.push(`说话方式：${row.voice}`)
+      if (row.arc) details.push(`弧光：${row.arc}`)
+      const aliases = parseAliases(row.aliasesJson)
+      if (aliases.length) details.push(`别名：${aliases.join('、')}`)
+      const detailLine = details.length ? `\n  ${details.join('；')}` : ''
+      return `${head}${detailLine}\n  属性：${row.attributesJson} [来源:${row.id}]`
+    }).join('\n'),
     sources: rows.map(row => ({ id: row.id, type: row.kind, status: row.status })),
+  }
+}
+
+function parseAliases(json: string): string[] {
+  try {
+    const value = JSON.parse(json) as unknown
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
   }
 }
 
@@ -74,6 +99,19 @@ function chapterLines(rows: Array<{ chapter: Chapter; revision: ChapterRevision 
     }).join('\n\n'),
     sources: rows.map(({ revision }) => ({ id: revision.id, type: 'chapter', status: 'confirmed' })),
   }
+}
+
+function contractLines(project: Project): string {
+  const parts: string[] = []
+  if (project.pov) parts.push(`叙事视角：${project.pov}`)
+  if (project.tense) parts.push(`时态：${project.tense}`)
+  if (project.chapterWordsMin || project.chapterWordsMax) {
+    parts.push(`单章字数：${project.chapterWordsMin || '不限'}–${project.chapterWordsMax || '不限'}`)
+  }
+  if (project.targetChapters) parts.push(`目标章数：${project.targetChapters}`)
+  const themes = parseAliases(project.themesJson)
+  if (themes.length) parts.push(`主题：${themes.join('、')}`)
+  return parts.length ? `作品契约：${parts.join('；')}` : ''
 }
 
 export class ContextBuilder {
@@ -95,13 +133,60 @@ export class ContextBuilder {
     const currentSources: ContextSource[] = outline ? [{ id: outline.id, type: 'outline', status: 'planned' }] : []
     sections.push({
       name: '当前章节与硬约束', priority: 0,
-      text: `项目：${project.title}（${project.genre}）\n故事前提：${project.premise}\n文风规范：${project.styleGuide}\n当前章节：第${chapter.chapterNo}章 ${chapter.title}\n章纲（计划，不是已发生事实）：${outline?.content ?? '无'}\n硬约束：不得把计划或草稿当作事实；不得无依据改变人物能力、生死、关系和世界观规则。`,
+      text: [
+        `项目：${project.title}（${project.genre}）`,
+        `故事前提：${project.premise}`,
+        `文风规范：${project.styleGuide}`,
+        contractLines(project),
+        `当前章节：第${chapter.chapterNo}章 ${chapter.title}`,
+        `章纲（计划，不是已发生事实）：${outline?.content ?? '无'}`,
+        '硬约束：不得把计划或草稿当作事实；不得无依据改变人物能力、生死、关系和世界观规则。',
+      ].filter(Boolean).join('\n'),
       sources: currentSources,
     })
-    const characters = entityLines(confirmedEntities.filter(row => row.kind === 'character'))
+    const characters = entityLines(confirmedEntities.filter(row => row.kind === 'character'), true)
     if (characters.text) sections.push({ name: '人物当前正式状态', priority: 1, text: characters.text, sources: characters.sources })
     const world = entityLines(confirmedEntities.filter(row => row.kind !== 'character'))
     if (world.text) sections.push({ name: '正式世界观与规则', priority: 2, text: world.text, sources: world.sources })
+
+    // 人物关系：冲突与张力的直接来源。
+    const relationRows = this.store.listRelations(project.id)
+    if (relationRows.length) {
+      sections.push({
+        name: '人物与势力关系',
+        priority: 2,
+        text: relationRows
+          .map(row => `- ${row.sourceName} —${row.kind}→ ${row.targetName}${row.tension ? `（张力：${row.tension}）` : ''}${row.status !== 'active' ? ` [${row.status}]` : ''} [来源:${row.id}]`)
+          .join('\n'),
+        sources: relationRows.map(row => ({ id: row.id, type: 'relation', status: row.status })),
+      })
+    }
+
+    // 剧情线：主线/支线的当前目标与进度。
+    const threadRows = this.store.listPlotThreads(project.id).filter(row => row.status !== 'closed')
+    if (threadRows.length) {
+      sections.push({
+        name: '剧情线（主线与支线）',
+        priority: 2,
+        text: threadRows
+          .map(row => `- [${row.kind}] ${row.name}（${row.status}）${row.goal ? `目标：${row.goal}` : ''}${row.summary ? ` · ${row.summary}` : ''} [来源:${row.id}]`)
+          .join('\n'),
+        sources: threadRows.map(row => ({ id: row.id, type: 'thread', status: row.status })),
+      })
+    }
+
+    // 本章场景/节拍：写作时最直接的落地指令。
+    const sceneRows = this.store.listScenes(chapter.id)
+    if (sceneRows.length) {
+      sections.push({
+        name: '本章场景与节拍（计划）',
+        priority: 1,
+        text: sceneRows
+          .map(row => `- S${row.sceneNo}${row.beat ? `[${row.beat}]` : ''} 目标：${row.goal || '未填'}；冲突：${row.conflict || '未填'}；结果：${row.outcome || '未填'}${row.castNames.length ? `；出场：${row.castNames.join('、')}` : ''} [来源:${row.id}]`)
+          .join('\n'),
+        sources: sceneRows.map(row => ({ id: row.id, type: 'scene', status: row.status })),
+      })
+    }
     if (recent.length) {
       const data = chapterLines(recent, true)
       sections.push({ name: '最近正式章节正文', priority: 3, text: data.text, sources: data.sources })
@@ -125,7 +210,7 @@ export class ContextBuilder {
       })
     }
     if (plannedEntities.length) {
-      const data = entityLines(plannedEntities)
+      const data = entityLines(plannedEntities, true)
       sections.push({ name: '计划或待确认资料（禁止视为事实）', priority: 6, text: data.text, sources: data.sources })
     }
 

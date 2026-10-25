@@ -2,7 +2,7 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.4.2`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.5.0`。
 
 0.3.0 起提供两层可视化界面：**DSH 内嵌面板**（在 Web GUI 侧边栏点「小说」即可查正文、人物、时间线、伏笔、全局搜索）与**完整本地工作台 Studio**（12 个页面，可编辑、可定稿、可导出）。两层共用同一份 SQLite 数据，不用 AI 也能管理与写作。
 GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>
@@ -272,8 +272,52 @@ pnpm run novel -- doctor
 | `novel_review_chapter` | 六维审查 + 确定性规则检查，保存带证据的问题 | 是 |
 | `novel_revise_chapter` | 针对选定问题修订并自动复检，受轮次上限约束 | 是 |
 | `novel_list_revisions` / `novel_compare_revisions` / `novel_rollback_chapter` | 版本历史、逐行差异、回滚为新草稿 | 否 |
+| `novel_ingest_material` | 素材抽成结构化资料（人物/关系/事件/伏笔/剧情线），默认生成待审批提议 | 是 |
+| `novel_list_ingest_batches` / `novel_apply_ingest_batch` | 查看导入批次、批准后批量应用 | 否 |
 | `novel_finalize_chapter` | 人工批准后定稿，并在同一事务中应用指定变更 | 否 |
 | `novel_list_workflows` / `novel_export_markdown` | 任务状态、导出已定稿 Markdown | 否 |
+
+### 5.0 新增（0.5.0）：小说资料库 + 素材导入
+
+研究结论见 [`docs/story-bible.md`](docs/story-bible.md)：要写好百万字长篇，资料库不能只有「名字 + 简介」。
+0.5.0 按该模型扩了数据层与工具链：
+
+**资料库扩了什么**
+
+| 维度 | 新增内容 |
+| --- | --- |
+| 人物 | `role`（主角/反派/配角…）、`goal`、`motivation`、`flaw`、`secret`、`voice`、`arc`、`aliases`、`firstAppearanceChapterId`、`importance` |
+| 关系 | 新表 `relations`：源→目标 + 类型 + 张力 + 起始章 + 状态（原来人物之间没有边） |
+| 剧情线 | 新表 `plot_threads`：主线/支线/感情/悬疑/复仇/成长 + 目标 + 进度 + 当前章 |
+| 场景/节拍 | 新表 `scenes`：每章拆成场景，记录目标-冲突-结果-出场角色-POV（写顺一章的关键） |
+| 人物状态 | 新表 `character_states`：按章快照，避免「重伤秒好」 |
+| 事件/伏笔 | 事件加参与者/地点/重要度；伏笔加类型/重要度/备注 |
+| 作品契约 | `pov`、`tense`、`chapterWordsMin/Max`、`targetChapters`、`themes` |
+| 素材批次 | 新表 `ingest_batches`：原文、状态、抽取统计、丢弃原因、内部矛盾 |
+
+**素材 → 资料库（AI 自动更新）**
+
+```
+novel_ingest_material(project_id, material, title?, focus?, mode="propose")
+novel_list_ingest_batches(project_id, batch_id?)
+novel_apply_ingest_batch(batch_id)          # 需一次性用户审批
+```
+
+CLI：
+
+```sh
+pnpm run novel -- ingest --project <项目ID> --file notes.md --title "初始设定"
+pnpm run novel -- ingest --project <项目ID> --file notes.md --apply   # 直接应用
+```
+
+**防瞎编四道闸**（这是它敢自动写库的前提）：
+
+1. **quote-or-drop**：每条抽取必须带 `evidence`，服务端校验它确实是素材的子串（去空白后逐字匹配），编造的一律丢弃并计入 `droppedReasons`。
+2. **默认 proposal**：抽取结果只进 `change_proposals`（`source='ai_ingest'`、带 `batch_id`），正式资料不动；应用必须显式批准。
+3. **关系延迟解析**：人物与关系同批导入也能落库——关系先按名字提议，应用时再解析 ID，且实体提议永远先于关系应用。
+4. **矛盾上报**：素材内部/与已有资料冲突的地方进 `stats.conflictList`，不静默覆盖。
+
+**写作上下文同步接入**：`novel_get_context` 现在会拼人物深度档案、人物与势力关系、剧情线、本章场景与节拍；不再是「只有简介」。
 
 ### 5.1 三条硬约束
 

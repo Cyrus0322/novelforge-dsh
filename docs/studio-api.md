@@ -558,3 +558,50 @@ SearchResult  { recordId, recordType, sourceId, status, snippet }
    （各端点已分别标注）；单资源 GET 与所有写接口会返回 `404 NOT_FOUND`。
 3. `GET /api/projects/:projectId/search` 的 FTS5 trigram 索引对 <3 字查询会回退子串匹配；两字中文名可命中，
    但非连续子串（如从「青铜钥匙」里搜「青钥匙」）不属于子串，检索不到——这是全文索引的正常语义，不是缺陷。
+
+---
+
+## 9. 0.5.0 新增端点（关系 / 剧情线 / 场景 / 素材导入）
+
+> 端点数从 48 增至 **62**。以下均为同源 JSON 信封；错误码沿用 §2。
+
+### 9.1 关系
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/projects/:projectId/relations` | 返回 `Relation[]`，每条额外带 `sourceName` / `targetName`（已解析成人名） |
+| POST | `/api/projects/:projectId/relations` | body：`sourceId, targetId, kind, tension?, notes?, sinceChapterId?` |
+| PATCH | `/api/relations/:relationId` | body：`kind?, tension?, notes?, status?, sinceChapterId?, expectedVersion?` |
+
+### 9.2 剧情线
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/projects/:projectId/threads` | `PlotThread[]` |
+| POST | `/api/projects/:projectId/threads` | body：`name, kind?(main/sub/romance/mystery/revenge/growth), goal?, summary?, currentChapterId?` |
+| PATCH | `/api/threads/:threadId` | body：`name?, kind?, goal?, summary?, status?, currentChapterId?, expectedVersion?` |
+
+### 9.3 场景 / 节拍
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/chapters/:chapterId/scenes` | `Scene[]`，每条额外带 `castNames` / `locationName` |
+| POST | `/api/chapters/:chapterId/scenes` | body：`sceneNo?, beat?, goal?, conflict?, outcome?, locationEntityId?, cast?(string[]), povEntityId?, notes?` |
+| PATCH | `/api/scenes/:sceneId` | body：`beat?, goal?, conflict?, outcome?, locationEntityId?, cast?, povEntityId?, notes?, status?, expectedVersion?` |
+| DELETE | `/api/scenes/:sceneId` | 返回 `{ ok: true }` |
+
+### 9.4 素材导入
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/projects/:projectId/ingest` | body：`material`（≥20 字）、`title?`、`focus?`、`mode?`(propose/apply)。返回 `{ batch, stats, proposals, applied? }` |
+| GET | `/api/projects/:projectId/ingest-batches` | `IngestBatch[]`（最近 50 条） |
+| GET | `/api/ingest-batches/:batchId` | `{ batch, proposals }` |
+| POST | `/api/ingest-batches/:batchId/apply` | 应用该批次全部待审批提议；返回 `{ applied, failed, batch }` |
+
+**口径说明**
+
+- `stats.droppedReasons` 记录被丢弃原因，常见键：`entity_evidence_missing` / `relation_evidence_missing` / `event_evidence_missing` / `foreshadowing_evidence_missing` / `thread_evidence_missing` / `relation_unknown_entity`。
+- `stats.conflictList` 是模型报告的素材内部矛盾（类型 + 描述 + 证据），仅提示，不自动修改任何资料。
+- 应用顺序固定为 实体 → 剧情线 → 伏笔 → 事件 → **关系**，保证同批新建的人物能被关系解析到。
+- 无模型凭据时 `POST /ingest` 返回 `400 CONFIG_ERROR`（与其它 AI 端点一致）。
