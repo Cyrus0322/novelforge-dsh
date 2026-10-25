@@ -1,0 +1,17 @@
+- insert:
+    - id: novelforge
+      name: novelforge-dsh
+      config:
+        databasePath: ./data/novelforge.db
+        apiKeyEnv: DEEPSEEK_API_KEY
+        baseURL: https://api.deepseek.com
+        model: deepseek-chat
+        temperature: 0.8
+        maxTokens: 4096
+        timeoutMs: 60000
+        maxRetries: 3
+        retryBaseDelayMs: 800
+        maxInputTokens: 24000
+        maxContextTokens: 64000
+        recentChapters: 3
+        maxRevisionRounds: 3
