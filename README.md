@@ -97,6 +97,28 @@ dsh plugin --profile novel add "$PWD"
 
 **pnpm 用户注意原生依赖**：本包依赖 `better-sqlite3`。pnpm 10+ 默认拦截依赖构建脚本，首次安装可能报 `ERR_PNPM_IGNORED_BUILDS`，且 bundle 不会被注册。处理方式：把 `~/.dsh/profiles/<name>/pnpm-workspace.yaml` 里的占位值改成 `allowBuilds: { better-sqlite3: true }`，再重新执行 `dsh plugin --profile <name> add novelforge-dsh`。若出现 `atomic-write: timed out waiting for the writer lock`，删除该目录下的 `package.json.lock` 后重试。npm 用户不受此影响。
 
+**下载不到预编译二进制时会退回源码编译（Windows 常见）**：`better-sqlite3` 默认从 GitHub Release 下载预编译产物。若网络到 GitHub 不通，`prebuild-install` 会报 `No prebuilt binaries found` 并退回 `node-gyp rebuild`，在部分环境下还会因 `enable_thin_lto is not defined` 编译失败。解决方式是指定镜像，任选其一：
+
+```sh
+# 当前会话
+export npm_config_better_sqlite3_binary_host_mirror=https://registry.npmmirror.com/-/binary/better-sqlite3
+
+# 或写入 ~/.npmrc
+better_sqlite3_binary_host_mirror=https://registry.npmmirror.com/-/binary/better-sqlite3
+```
+
+使用 DSH 桌面应用安装时，应用会用自己的 pnpm 与运行时（例如 Node 24.21.0），**不会继承终端环境变量**，需要把上面这一对键值设为 Windows 用户级环境变量：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  'npm_config_better_sqlite3_binary_host_mirror',
+  'https://registry.npmmirror.com/-/binary/better-sqlite3', 'User')
+```
+
+设置后**完全退出并重启 DSH 桌面应用**再安装。
+
+**从 GitHub 仓库安装**：DSH 支持填仓库地址，但本仓库不提交 `dist/`，须由包的 `prepare` 脚本现场构建，因此同样需要在 profile 的 `pnpm-workspace.yaml` 中放行 `allowBuilds: { novelforge-dsh: true, better-sqlite3: true }`。更省事的做法是填本地目录路径或 npm 包名。
+
 随后在会话中要求模型调用 `novel_list_projects` 或 `novel_search` 验证。
 
 ### 3.3 独立 CLI（不依赖 DSH，便于调试）
