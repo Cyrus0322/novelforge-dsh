@@ -63,7 +63,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "novel": "tsx src/cli/index.ts",
-    "prepack": "pnpm run build"
+    "prepack": "pnpm run build",
+    "prepare": "pnpm run build"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "~3.18.5",
