@@ -2,9 +2,9 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.8.0`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.9.0`。
 
-0.8.0 让知情矩阵真正开始工作：审查器会用「谁知道什么」做确定性检查（角色提到自己不知道的事 → major 问题），素材导入也会抽知情事实；另加关系编辑与面板内 AI 批量规划大纲。0.7.0 在 0.6.0 的基础上补齐了长篇写作最缺的几块：知情矩阵、人物状态快照、章纲编辑、事件/伏笔手工增改、关系/剧情线删除、面板内导出、伏笔逾期提醒。0.6.0 起**主界面就在 DSH 里**：侧边栏点「小说」即打开完整工作台——查正文、写正文、定稿、改人物、管剧情线/关系/场景、贴素材让 AI 更新资料库、审批变更，全在 DSH 面板内完成，不需要再开浏览器。完整的 12 页 Studio 仍保留，作为大屏编辑与导出的补充入口。两层共用同一份 SQLite 数据。
+0.9.0 起**面板接口挂在 DSH 自己的 web 服务上（同源）**：不再需要第二个本地进程、不再扫端口、不再为了用工作台去开浏览器；面板顶部会显示当前模型来源（DSH 宿主模型 / 直连 Key）。完整 12 页工作台也能在 `<DSH 端口>/novelforge/` 同源打开。0.8.0 让知情矩阵真正开始工作：审查器会用「谁知道什么」做确定性检查（角色提到自己不知道的事 → major 问题），素材导入也会抽知情事实；另加关系编辑与面板内 AI 批量规划大纲。0.7.0 在 0.6.0 的基础上补齐了长篇写作最缺的几块：知情矩阵、人物状态快照、章纲编辑、事件/伏笔手工增改、关系/剧情线删除、面板内导出、伏笔逾期提醒。0.6.0 起**主界面就在 DSH 里**：侧边栏点「小说」即打开完整工作台——查正文、写正文、定稿、改人物、管剧情线/关系/场景、贴素材让 AI 更新资料库、审批变更，全在 DSH 面板内完成，不需要再开浏览器。完整的 12 页 Studio 仍保留，作为大屏编辑与导出的补充入口。两层共用同一份 SQLite 数据。
 GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>
 
 ---
@@ -175,16 +175,21 @@ pnpm run studio:dev        # 终端 B：Vite dev server（127.0.0.1:5273）
 `exports["./client"]` 指向 `lib/client.js`（由 `scripts/build-client.mjs` 用 esbuild 生成，
 只把 `react` / `react/jsx-runtime` 留给宿主基座）。加载后：
 
-1. 宿主侧插件在启动时自动拉起本机 REST 服务（默认 `127.0.0.1:4319`，端口占用自动顺延），
-   与 DSH 工具共用同一个 `NovelStore` 连接（面板即主界面，浏览器工作台只是补充入口）；
+1. 宿主侧插件把 REST 路由注册到 DSH 自己的 `webServer`（`ctx.webServer.register`，前缀 `/novelforge-api`），
+   与 DSH 工具共用同一个 `NovelStore` 连接。面板直接请求同源地址，**不需要第二个进程、不扫端口、不开浏览器**；
+   完整工作台前端也挂在同源 `/novelforge/` 下。只有宿主没有 `webServer`（旧版 DSH）时才回退到独立服务；
 2. 客户端面板注册进 `main`（keyed slot）与 `sidebar.panellist`，点侧边栏 **「小说」** 打开，
    也可以访问 `http://127.0.0.1:<DSH 端口>/#novelforge` 直接跳转。
 
-面板能做什么（0.6.0 起**可写**）：
+面板能做什么（0.6.0 起可写，0.9.0 起同源）：
+
+> 面板顶部会显示 `模型：DSH 宿主` / `模型：直连 Key` / `模型：未配置`；
+> 用 DSH 宿主模型时不需要任何 API Key，AI 按钮直接调 `ctx.llm`。
 
 | 标签 | 能做的事 |
 | --- | --- |
-| 章节 | 新建章节、读全文、**编辑正文并保存为新版本**、**编辑章纲**、**定稿**（带确认）；右侧栏场景可增改删 |
+| 顶栏 | 项目切换、**新建项目 / 项目设置**（书名/题材/POV/时态/字数区间/目标章数/主题/前提/文风）、全局搜索、导出、刷新 |
+| 章节 | 新建章节、**AI 规划后续章节**、读全文、**编辑正文并保存为新版本**、**编辑章纲**、**定稿**（带确认）；右侧栏场景可增改删 |
 | 资料 | 展示定位/目标/缺陷/秘密；**新建与编辑**深度字段；**详情面板**看按章状态快照与相关知情/关系 |
 | 剧情线 | 主线/支线列表；**新建 / 编辑 / 删除**名称、类型、目标、简介、状态 |
 | 关系 | 人物—类型→人物 + 张力；**新建 / 删除** |
@@ -226,6 +231,8 @@ pnpm run novel -- doctor
 | `maxRetries` | `DEEPSEEK_MAX_RETRIES` | `3` | 0–10，仅对可重试错误生效 |
 | `retryBaseDelayMs` | — | `800` | 指数退避基数，遵循 `Retry-After` |
 | `databasePath` | `NOVELFORGE_DB_PATH` | `./data/novelforge.db` | SQLite 路径 |
+| `studioAutoStart` | `NOVELFORGE_STUDIO_AUTOSTART` | `false` | 是否额外起独立工作台服务；面板默认走 DSH 同源路由，不需要它 |
+| `studioPort` | `NOVELFORGE_STUDIO_PORT` | `4319` | 独立服务端口（仅 `studioAutoStart` 或 CLI 时生效） |
 | `maxInputTokens` | `NOVELFORGE_MAX_INPUT_TOKENS` | `24000` | 单次请求输入预算 |
 | `maxContextTokens` | `NOVELFORGE_MAX_CONTEXT_TOKENS` | `64000` | 上下文包硬上限，必须大于 `maxTokens` |
 | `recentChapters` | `NOVELFORGE_RECENT_CHAPTERS` | `3` | 上下文携带的近期章节数 |

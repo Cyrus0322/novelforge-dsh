@@ -9,8 +9,9 @@ import type { RuntimeConfig } from '../shared/config.js'
 import { toJson } from '../shared/json.js'
 import { createNovelService } from '../workflow/novel-service.js'
 import { createHostLlmClient } from '../llm/dsh-llm.js'
-import { startStudioServer } from '../server/index.js'
+import { defaultStudioDir, packageVersion, startStudioServer } from '../server/index.js'
 import type { StudioServerHandle } from '../server/index.js'
+import { HOST_ROUTE_PREFIX, STATIC_PREFIX, createHostApiHandler, createHostStaticHandler } from '../server/host-route.js'
 import type { NovelService } from '../workflow/novel-service.js'
 import { z } from 'zod'
 
@@ -97,9 +98,64 @@ export function apply(ctx: Context, config: Config = DEFAULT_CONFIG): void {
   ctx.effect(() => () => service.close())
   registerTools(ctx, service, config)
 
-  // 本地工作台服务：给内嵌面板与浏览器界面提供同一份数据的 REST 入口。
+  // ① 把接口挂到 DSH 自己的 webServer 上（同源）：面板不依赖第二个进程、不扫端口、不开浏览器。
+  //    用 ctx.inject 等待服务就绪——插件 apply 可能早于 webServer 完成挂载。
+  const studioDir = defaultStudioDir()
+  const version = packageVersion()
+  const llmSource = (): 'host' | 'direct' | 'none' => {
+    if (hasAi(ctx, runtimeConfig)) return 'host'
+    try { resolveApiKey(runtimeConfig); return 'direct' } catch { return 'none' }
+  }
+  const apiHandler = createHostApiHandler({
+    service,
+    store: service.store,
+    version,
+    databasePath: runtimeConfig.databasePath,
+    studioDir,
+    hasApiKey: () => hasAi(ctx, runtimeConfig),
+    llmSource,
+  })
+  const staticHandler = createHostStaticHandler(studioDir, version)
+
+  let hostRouteReady = false
+  const registerHostRoutes = (webCtx: {
+    webServer?: { register: (route: { kind: 'prefix'; path: string; handler: unknown }) => () => void }
+    effect?: (callback: () => () => void) => void
+  }): void => {
+    const webServer = webCtx.webServer
+    if (!webServer || typeof webServer.register !== 'function') {
+      log(ctx, 'warn', 'webServer 服务不可用，NovelForge 无法注册同源路由。')
+      return
+    }
+    const mount = (): (() => void) => {
+      const disposeApi = webServer.register({ kind: 'prefix', path: HOST_ROUTE_PREFIX, handler: apiHandler })
+      const disposeStatic = webServer.register({ kind: 'prefix', path: STATIC_PREFIX, handler: staticHandler })
+      hostRouteReady = true
+      log(ctx, 'info', `NovelForge 已挂到 DSH 同源：${HOST_ROUTE_PREFIX}（模型来源：${llmSource() === 'host' ? 'DSH 宿主模型' : llmSource() === 'direct' ? '直连 API Key' : '不可用'}）`)
+      return () => { disposeApi(); disposeStatic(); hostRouteReady = false }
+    }
+    try {
+      if (typeof webCtx.effect === 'function') webCtx.effect(mount)
+      else mount()
+    } catch (error) {
+      log(ctx, 'warn', `NovelForge 同源路由注册失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const injectCapable = typeof (ctx as unknown as { inject?: unknown }).inject === 'function'
+  if (injectCapable) {
+    (ctx as unknown as { inject: (deps: string[], callback: (scope: never) => void) => void })
+      .inject(['webServer'], registerHostRoutes as never)
+  } else {
+    const immediate = (ctx as unknown as { get?: (name: string) => unknown }).get?.('webServer')
+    if (immediate) registerHostRoutes({ webServer: immediate as never })
+    else log(ctx, 'warn', '当前 DSH 没有 webServer 服务，NovelForge 面板将回退到独立本地服务。')
+  }
+
+  // ② 回退：只有宿主没有 webServer、或用户显式开启时，才起独立服务。
   // 复用插件的同一个 store（ownsService: false），端口被占用时自动顺延。
-  if (runtimeConfig.studioAutoStart) {
+  const needsFallback = runtimeConfig.studioAutoStart || (!injectCapable && !hostRouteReady)
+  if (needsFallback) {
     let handle: StudioServerHandle | null = null
     let disposed = false
     void startStudioServer({
@@ -114,7 +170,7 @@ export function apply(ctx: Context, config: Config = DEFAULT_CONFIG): void {
         void started.close()
         return
       }
-      log(ctx, 'info', `NovelForge 工作台已就绪：${started.url}（数据库：${runtimeConfig.databasePath}）`)
+      log(ctx, 'info', `NovelForge 独立工作台已就绪：${started.url}（数据库：${runtimeConfig.databasePath}），仅作为同源面板的回退。`)
     }).catch((error: unknown) => {
       log(ctx, 'warn', `NovelForge 工作台未能启动：${error instanceof Error ? error.message : String(error)}。内嵌面板会显示连接失败提示，DSH 工具不受影响。`)
     })

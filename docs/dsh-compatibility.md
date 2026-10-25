@@ -99,7 +99,8 @@ pnpm run studio         # 127.0.0.1:4319，自动开浏览器
 
 ## 0.4.0 新增：DSH Web 内嵌面板（客户端插件）契约核验
 
-以下每一项都来自本机 **DSH 0.2.1-rc.3 桌面版**（`D:\DeepSeek Haressesourcespp.asar`）的真实源码，路径可复核；随后在独立安装的 `@deepseek-ai/dsh@0.2.1-rc.3` 上做了端到端验证。
+以下每一项都来自本机 **DSH 0.2.1-rc.3 桌面版**（`D:\DeepSeek Haress
+esourcespp.asar`）的真实源码，路径可复核；随后在独立安装的 `@deepseek-ai/dsh@0.2.1-rc.3` 上做了端到端验证。
 
 ### 1. 包声明
 
@@ -162,3 +163,31 @@ export function apply(ctx) {
 
 - **没有真实浏览器点击验收**：本机无浏览器自动化，故只验证到「宿主把 bundle 纳入启动图并成功下发 + 宿主侧服务可用」。面板的视觉与交互需要你在 DSH GUI 里点一次侧边栏「小说」确认。
 - 若未来 DSH 调整 `slots.register` 的字段（`key` / `id` / `label` / `children`），内嵌面板会失效；代码里每处注册都包了 try/catch 并只告警，不会拖垮 GUI。`tests/client-bundle.test.ts` 固定了当前契约，升级宿主时先跑它。
+
+## 0.9.0：宿主同源路由（不再需要第二个进程）
+
+从 `@deepseek-ai/dsh-host-webserver` 的实机源码确认了路由扩展点：
+
+```js
+// dsh-host-webserver/lib/index.js
+register(route) {                     // route = { kind: 'exact' | 'prefix', path, handler }
+  const table = route.kind === 'exact' ? this.exact : this.prefixes
+  ...
+}
+// 分发：await route.handler(req, res)   —— handler 就是 (IncomingMessage, ServerResponse)
+```
+
+插件在 `apply` 里通过 `ctx.get('webServer')` 取服务并注册两个前缀路由：
+
+| 前缀 | 作用 |
+| --- | --- |
+| `/novelforge-api` | 全部 REST 接口（与独立服务同一套 `buildRoutes`），面板同源调用 |
+| `/novelforge` | 完整工作台静态前端（SPA 回退） |
+
+安全：接口按「同源」判定（`Origin` 与 `Host` 不一致 → 403），写操作还要求 `x-novelforge-header`
+(`x-novelforge-panel`) 自定义头，跨站页面无法在不触发预检的情况下伪造。
+
+模型：宿主有 `ctx.llm` 时面板走宿主模型；`/api/health` 的 `llmSource` 会返回 `host` / `direct` / `none`，
+面板顶部据此显示「模型：DSH 宿主」。
+
+回退：宿主没有 `webServer`（旧版）或显式 `studioAutoStart: true` 时才起独立 HTTP 服务（4319 起顺延）。

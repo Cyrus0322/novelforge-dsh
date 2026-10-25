@@ -53,7 +53,7 @@ export function errorStatus(code: string): number {
   }
 }
 
-function failure(response: ServerResponse, status: number, code: string, message: string, details?: unknown): void {
+export function failure(response: ServerResponse, status: number, code: string, message: string, details?: unknown): void {
   const payload = JSON.stringify({ ok: false, error: { code, message, ...(details === undefined ? {} : { details }) } })
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -110,7 +110,7 @@ export async function readBody(request: IncomingMessage): Promise<Record<string,
   return parsed as Record<string, unknown>
 }
 
-function match(route: Route, method: string, pathname: string): Record<string, string> | null {
+export function match(route: Route, method: string, pathname: string): Record<string, string> | null {
   if (route.method !== method) return null
   const patternParts = route.pattern.split('/').filter(Boolean)
   const pathParts = pathname.split('/').filter(Boolean)
@@ -216,11 +216,11 @@ export function createDispatcher(options: DispatcherOptions) {
       failure(response, 405, 'INVALID_INPUT', '静态资源只支持 GET。')
       return
     }
-    serveStatic(response, options.studioDir, url.pathname, options.version)
+    serveStaticFile(response, options.studioDir, url.pathname, options.version)
   }
 }
 
-function serveStatic(response: ServerResponse, studioDir: string, pathname: string, version: string): void {
+export function serveStaticFile(response: ServerResponse, studioDir: string, pathname: string, version: string): void {
   const indexFile = join(studioDir, 'index.html')
   if (!existsSync(indexFile)) {
     sendText(response, NOT_BUILT_HTML(studioDir, version), 'text/html; charset=utf-8', 503)

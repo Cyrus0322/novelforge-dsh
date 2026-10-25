@@ -92,38 +92,72 @@ interface IngestOutcome {
 
 type Tab = 'chapters' | 'entities' | 'threads' | 'relations' | 'timeline' | 'foreshadowing' | 'knowledge' | 'ingest' | 'proposals'
 
-// ── 数据访问 ─────────────────────────────────────────────────
-let cachedBase: string | null = null
+// ── 数据访问：优先走 DSH 宿主同源路由，其次回退到独立本地服务 ──────────
+type Endpoint = { kind: 'host'; prefix: string } | { kind: 'standalone'; base: string }
 
-async function probe(port: number): Promise<string | null> {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) })
-    if (!response.ok) return null
-    const payload = await response.json() as { ok?: boolean; data?: { version?: string } }
-    return payload.ok && payload.data?.version ? `http://127.0.0.1:${port}` : null
-  } catch {
-    return null
-  }
+const HOST_PREFIX = '/novelforge-api'
+const PANEL_HEADER = 'x-novelforge-panel'
+let cachedEndpoint: Endpoint | null = null
+
+function endpointUrl(endpoint: Endpoint, path: string): string {
+  if (endpoint.kind === 'host') return endpoint.prefix + path.replace(/^\/api/, '')
+  return endpoint.base + path
 }
 
-async function discoverBase(force = false): Promise<string> {
-  if (cachedBase && !force) return cachedBase
+function fullWorkbenchUrl(endpoint: Endpoint): string {
+  if (endpoint.kind === 'host') return `${window.location.origin}${'/novelforge/'}`
+  return endpoint.base
+}
+
+async function detectEndpoint(force = false): Promise<Endpoint> {
+  if (cachedEndpoint && !force) return cachedEndpoint
+
+  // 1) DSH 自己的端口上有没有我们的路由（同源，不需要额外进程）
+  try {
+    const response = await fetch(`${HOST_PREFIX}/health`, {
+      headers: { [PANEL_HEADER]: '1' },
+      signal: AbortSignal.timeout(2500),
+    })
+    if (response.ok) {
+      const payload = await response.json() as { ok?: boolean; data?: { version?: string } }
+      if (payload.ok && payload.data?.version) {
+        cachedEndpoint = { kind: 'host', prefix: HOST_PREFIX }
+        return cachedEndpoint
+      }
+    }
+  } catch {
+    // 宿主没有该路由：继续找独立服务
+  }
+
+  // 2) 回退：独立本地服务（CLI `novelforge studio`，或旧版宿主）
   for (let round = 0; round < RETRY_DELAYS.length; round += 1) {
     for (const port of CANDIDATE_PORTS) {
-      const base = await probe(port)
-      if (base) { cachedBase = base; return base }
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1500) })
+        if (!response.ok) continue
+        const payload = await response.json() as { ok?: boolean; data?: { version?: string } }
+        if (payload.ok && payload.data?.version) {
+          cachedEndpoint = { kind: 'standalone', base: `http://127.0.0.1:${port}` }
+          return cachedEndpoint
+        }
+      } catch {
+        // 试下一个端口
+      }
     }
     await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[round]))
   }
-  cachedBase = null
-  throw new Error('连不上 NovelForge 本地服务（端口 4319–4331）。\n· 确认插件已启用：设置 → 插件 → novelforge-dsh\n· 或手动启动：npx novelforge-dsh studio')
+  cachedEndpoint = null
+  throw new Error('连不上 NovelForge 接口。\n· 确认插件已启用：设置 → 插件 → novelforge-dsh\n· 重启 DSH 桌面版让同源路由生效\n· 或手动启动兜底服务：npx novelforge-dsh studio')
 }
 
 async function apiCall<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const base = await discoverBase()
-  const response = await fetch(base + path, {
+  const endpoint = await detectEndpoint()
+  const response = await fetch(endpointUrl(endpoint, path), {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      [PANEL_HEADER]: '1',
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   const text = await response.text()
@@ -131,12 +165,19 @@ async function apiCall<T>(method: string, path: string, body?: unknown): Promise
   try {
     payload = JSON.parse(text) as typeof payload
   } catch {
-    throw new Error(`服务返回了非 JSON 内容（HTTP ${response.status}）`)
+    throw new Error(`接口返回了非 JSON 内容（HTTP ${response.status}）`)
   }
   if (!response.ok || !payload.ok) throw new Error(payload.error?.message ?? `请求失败（HTTP ${response.status}）`)
   return payload.data as T
 }
 const apiGet = <T,>(path: string) => apiCall<T>('GET', path)
+
+async function fetchText(path: string): Promise<string> {
+  const endpoint = await detectEndpoint()
+  const response = await fetch(endpointUrl(endpoint, path), { headers: { [PANEL_HEADER]: '1' } })
+  if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`)
+  return response.text()
+}
 
 // ── 小件 ────────────────────────────────────────────────────
 const STATUS_TEXT: Record<string, string> = {
@@ -167,6 +208,15 @@ function toneOf(status: string): string {
   if (['planned', 'draft', 'draft_generated', 'manual_draft', 'analyzing', 'applying'].includes(status)) return C.info
   return C.muted
 }
+function parseThemes(json: string): string {
+  try {
+    const value = JSON.parse(json) as unknown
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').join('、') : ''
+  } catch {
+    return ''
+  }
+}
+
 function shortTime(iso: string): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso
@@ -264,6 +314,7 @@ export function NovelForgePanel() {
   const [attempt, setAttempt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [aiReady, setAiReady] = useState(false)
+  const [llmSource, setLlmSource] = useState<'host' | 'direct' | 'none' | null>(null)
 
   // 章节工作台
   const [reader, setReader] = useState<ChapterDetail | null>(null)
@@ -285,6 +336,10 @@ export function NovelForgePanel() {
   const [entityStates, setEntityStates] = useState<EntityState[]>([])
   const [stateDraft, setStateDraft] = useState<{ chapterId: string; summary: string; stateJson: string } | null>(null)
   const [knowerDraft, setKnowerDraft] = useState<Record<string, 'knows' | 'suspects' | 'misbelieves' | 'unaware' | 'none'>>({})
+  const [projectDraft, setProjectDraft] = useState<{
+    id?: string; version?: number; title: string; genre: string; premise: string; styleGuide: string
+    pov: string; tense: string; chapterWordsMin: number; chapterWordsMax: number; targetChapters: number; themes: string
+  } | null>(null)
 
   // 素材导入
   const [material, setMaterial] = useState('')
@@ -338,8 +393,12 @@ export function NovelForgePanel() {
     setLoading(true)
     setError(null)
     try {
-      const health = await apiGet<{ hasApiKey: boolean }>('/api/health').catch(() => ({ hasApiKey: false }))
-      if (mounted.current) setAiReady(Boolean(health.hasApiKey))
+      const health = await apiGet<{ hasApiKey: boolean; llmSource?: 'host' | 'direct' | 'none' }>('/api/health')
+        .catch(() => ({ hasApiKey: false, llmSource: 'none' as const }))
+      if (mounted.current) {
+        setAiReady(Boolean(health.hasApiKey))
+        setLlmSource(health.llmSource ?? (health.hasApiKey ? 'direct' : 'none'))
+      }
       const list = await apiGet<Project[]>('/api/projects')
       if (!mounted.current) return
       setProjects(list)
@@ -667,10 +726,7 @@ export function NovelForgePanel() {
   const exportMarkdown = async (): Promise<void> => {
     if (!projectId) return
     try {
-      const base = await discoverBase()
-      const response = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/export.md`)
-      if (!response.ok) throw new Error(`导出失败（HTTP ${response.status}）`)
-      const markdown = await response.text()
+      const markdown = await fetchText(`/api/projects/${encodeURIComponent(projectId)}/export.md`)
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
@@ -684,7 +740,40 @@ export function NovelForgePanel() {
     }
   }
 
-  const retry = (): void => { cachedBase = null; setLoading(true); setAttempt(value => value + 1) }
+  const saveProject = async (): Promise<void> => {
+    if (!projectDraft) return
+    const payload = {
+      title: projectDraft.title,
+      genre: projectDraft.genre,
+      premise: projectDraft.premise,
+      styleGuide: projectDraft.styleGuide,
+      pov: projectDraft.pov,
+      tense: projectDraft.tense,
+      chapterWordsMin: projectDraft.chapterWordsMin,
+      chapterWordsMax: projectDraft.chapterWordsMax,
+      targetChapters: projectDraft.targetChapters,
+      themes: projectDraft.themes.split(/[，,、]/).map(item => item.trim()).filter(Boolean),
+    }
+    if (projectDraft.id) {
+      const ok = await act('project', () => apiCall('PATCH', `/api/projects/${projectDraft.id}`, { ...payload, expectedVersion: projectDraft.version }), '项目设置已保存')
+      if (ok) setProjectDraft(null)
+      return
+    }
+    setBusy('project')
+    try {
+      const created = await apiCall<Project>('POST', '/api/projects', payload)
+      flash(`项目「${created.title}」已创建`)
+      setProjectDraft(null)
+      projectIdRef.current = created.id
+      await refresh()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      if (mounted.current) setBusy(null)
+    }
+  }
+
+  const retry = (): void => { cachedEndpoint = null; setLoading(true); setAttempt(value => value + 1) }
 
   // ── 章节阅读 / 编辑视图 ──
   if (reader) {
@@ -820,8 +909,23 @@ export function NovelForgePanel() {
         </select>
         <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索章节、人物、事件、伏笔…" style={{ ...btnStyle, width: 240, fontWeight: 'normal' }} />
         <div style={{ flex: 1 }} />
+        {llmSource && (
+          <Pill color={llmSource === 'none' ? C.muted : C.ok}>
+            {llmSource === 'host' ? '模型：DSH 宿主' : llmSource === 'direct' ? '模型：直连 Key' : '模型：未配置'}
+          </Pill>
+        )}
         {project && <span style={{ color: C.muted }}>{project.genre}{project.pov ? ` · ${project.pov}` : ''}</span>}
-        <button type="button" style={btnStyle} onClick={() => { cachedBase = null; void refresh() }}>刷新</button>
+        <button type="button" style={btnStyle} onClick={() => setProjectDraft(project
+          ? {
+            id: project.id, version: project.version, title: project.title, genre: project.genre,
+            premise: project.premise, styleGuide: project.styleGuide, pov: project.pov, tense: project.tense,
+            chapterWordsMin: project.chapterWordsMin, chapterWordsMax: project.chapterWordsMax,
+            targetChapters: project.targetChapters, themes: parseThemes(project.themesJson),
+          }
+          : { title: '', genre: '', premise: '', styleGuide: '', pov: '', tense: '', chapterWordsMin: 0, chapterWordsMax: 0, targetChapters: 0, themes: '' })}>
+          {project ? '项目设置' : '新建项目'}
+        </button>
+        <button type="button" style={btnStyle} onClick={() => { cachedEndpoint = null; void refresh() }}>刷新</button>
         <button type="button" style={btnStyle} onClick={() => { void exportMarkdown() }} title="导出仅含已定稿章节的 Markdown">导出</button>
       </div>
 
@@ -859,7 +963,9 @@ export function NovelForgePanel() {
       {loading && <div style={{ padding: 16, color: C.muted }}>正在连接 NovelForge 本地服务…（服务刚启动时会自动重试约 20 秒）</div>}
 
       {!loading && !error && projects.length === 0 && (
-        <div style={{ padding: 24, color: C.muted, lineHeight: 1.9 }}>还没有小说项目。在对话里说「新建一本小说」，或到完整工作台创建。</div>
+        <div style={{ padding: 24, color: C.muted, lineHeight: 1.9 }}>
+          还没有小说项目。点右上角「新建项目」直接建一个（或在对话里说「新建一本小说」）。
+        </div>
       )}
 
       {!loading && query.trim() && (
@@ -1153,6 +1259,28 @@ export function NovelForgePanel() {
       )}
 
       {/* ── 弹窗 ── */}
+      {projectDraft && (
+        <Modal title={projectDraft.id ? '项目设置' : '新建小说项目'} onClose={() => setProjectDraft(null)}
+          footer={<><button type="button" style={btnStyle} onClick={() => setProjectDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveProject() }}>{projectDraft.id ? '保存' : '创建'}</button></>}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="书名"><input style={inputStyle} value={projectDraft.title} onChange={event => setProjectDraft({ ...projectDraft, title: event.target.value })} /></Field>
+            <Field label="题材"><input style={inputStyle} value={projectDraft.genre} onChange={event => setProjectDraft({ ...projectDraft, genre: event.target.value })} placeholder="悬疑 / 都市异能 / 赛博修仙" /></Field>
+            <Field label="叙事视角"><input style={inputStyle} value={projectDraft.pov} onChange={event => setProjectDraft({ ...projectDraft, pov: event.target.value })} placeholder="三人称限知 / 第一人称" /></Field>
+            <Field label="时态"><input style={inputStyle} value={projectDraft.tense} onChange={event => setProjectDraft({ ...projectDraft, tense: event.target.value })} placeholder="过去 / 现在" /></Field>
+            <Field label="单章字数下限"><input style={inputStyle} type="number" min={0} value={projectDraft.chapterWordsMin} onChange={event => setProjectDraft({ ...projectDraft, chapterWordsMin: Number(event.target.value) })} /></Field>
+            <Field label="单章字数上限"><input style={inputStyle} type="number" min={0} value={projectDraft.chapterWordsMax} onChange={event => setProjectDraft({ ...projectDraft, chapterWordsMax: Number(event.target.value) })} /></Field>
+            <Field label="目标章数"><input style={inputStyle} type="number" min={0} value={projectDraft.targetChapters} onChange={event => setProjectDraft({ ...projectDraft, targetChapters: Number(event.target.value) })} /></Field>
+            <Field label="主题（逗号分隔）"><input style={inputStyle} value={projectDraft.themes} onChange={event => setProjectDraft({ ...projectDraft, themes: event.target.value })} placeholder="代价、亲情" /></Field>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <Field label="故事前提"><textarea style={{ ...inputStyle, minHeight: 60 }} value={projectDraft.premise} onChange={event => setProjectDraft({ ...projectDraft, premise: event.target.value })} /></Field>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <Field label="文风规范" hint="会进入每次写作的上下文，作为硬约束"><textarea style={{ ...inputStyle, minHeight: 60 }} value={projectDraft.styleGuide} onChange={event => setProjectDraft({ ...projectDraft, styleGuide: event.target.value })} placeholder="冷峻短句，克制第三人称…" /></Field>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {knowledgeDraft && (
         <Modal wide title={knowledgeDraft.id ? '编辑知情事实' : '记录知情事实'} onClose={() => { setKnowledgeDraft(null); setKnowerDraft({}) }}
           footer={<><button type="button" style={btnStyle} onClick={() => { setKnowledgeDraft(null); setKnowerDraft({}) }}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveKnowledge() }}>保存</button></>}>

@@ -13,6 +13,8 @@ export interface RouteDeps {
   databasePath: string
   studioDir: string
   hasApiKey: () => boolean
+  /** 模型来源：宿主 DSH 的 ctx.llm、插件直连 API Key，或不可用。 */
+  llmSource?: () => 'host' | 'direct' | 'none'
 }
 
 function requireString(source: Record<string, unknown>, key: string, label = key): string {
@@ -104,6 +106,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
   add('GET', '/api/health', () => ({
     version: deps.version,
     hasApiKey: deps.hasApiKey(),
+    llmSource: deps.llmSource?.(),
     databasePath: deps.databasePath,
     studioBuilt: existsSync(`${deps.studioDir}/index.html`),
   }))

@@ -19,7 +19,11 @@ export interface RuntimeConfig {
   maxContextTokens: number
   recentChapters: number
   maxRevisionRounds: number
-  /** DSH 插件加载时自动起本地工作台服务，供内嵌面板与浏览器使用。 */
+  /**
+   * 是否额外起一个独立工作台 HTTP 服务。
+   * 默认 false：DSH 里面板走宿主同源路由（/novelforge-api），不需要第二个进程；
+   * 只有想在浏览器单独用完整工作台、或宿主没有 webServer 服务时才需要开。
+   */
   studioAutoStart: boolean
   /** 工作台服务监听端口；被占用时自动向后顺延。 */
   studioPort: number
@@ -41,7 +45,7 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   maxContextTokens: 64_000,
   recentChapters: 3,
   maxRevisionRounds: 3,
-  studioAutoStart: true,
+  studioAutoStart: false,
   studioPort: 4319,
 }
 

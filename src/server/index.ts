@@ -35,7 +35,12 @@ export interface StudioServerHandle {
   close: () => Promise<void>
 }
 
-function packageVersion(): string {
+/** 前端构建产物默认位置（宿主同源路由与独立服务共用）。 */
+export function defaultStudioDir(): string {
+  return process.env.NOVELFORGE_STUDIO_DIR ?? resolve(PACKAGE_ROOT, 'apps/studio/dist')
+}
+
+export function packageVersion(): string {
   try {
     const raw = readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf8')
     const parsed = JSON.parse(raw) as { version?: string }
@@ -67,9 +72,7 @@ function listen(server: Server, host: string, port: number): Promise<number> {
  * 浏览器端永远不直接读 SQLite，所有写入都经过领域层与审计日志。
  */
 export async function startStudioServer(options: StudioServerOptions): Promise<StudioServerHandle> {
-  const studioDir = options.studioDir
-    ?? process.env.NOVELFORGE_STUDIO_DIR
-    ?? resolve(PACKAGE_ROOT, 'apps/studio/dist')
+  const studioDir = options.studioDir ?? defaultStudioDir()
   const service = options.service ?? createNovelService(options.config)
   const ownsService = options.ownsService ?? options.service === undefined
   const releaseService = (): void => { if (ownsService) service.close() }

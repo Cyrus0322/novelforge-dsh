@@ -17,6 +17,7 @@
         maxContextTokens: 64000
         recentChapters: 3
         maxRevisionRounds: 3
-        # 本地工作台：插件加载时自动启动 REST 服务，供 DSH 内嵌面板与浏览器界面使用
-        studioAutoStart: true
+        # 面板默认走 DSH 宿主同源路由（/novelforge-api），不需要额外进程；
+        # 想单独在浏览器用完整工作台时，改 true 再由插件起独立服务（或直接跑 npx novelforge-dsh studio）
+        studioAutoStart: false
         studioPort: 4319

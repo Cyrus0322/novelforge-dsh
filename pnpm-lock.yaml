@@ -25,7 +25,7 @@ importers:
         version: 17.4.2
       drizzle-orm:
         specifier: ^0.44.7
-        version: 0.44.7(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)
+        version: 0.44.7(better-sqlite3@12.11.1)
       zod:
         specifier: ^4.1.12
         version: 4.6.7
@@ -513,9 +513,6 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
-
-  '@types/better-sqlite3@7.6.13':
-    resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -1416,11 +1413,6 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@types/better-sqlite3@7.6.13':
-    dependencies:
-      '@types/node': 24.19.2
-    optional: true
-
   '@types/chai@5.2.3':
     dependencies:
       '@types/deep-eql': 4.0.2
@@ -1542,9 +1534,8 @@ snapshots:
 
   dotenv@17.4.2: {}
 
-  drizzle-orm@0.44.7(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1):
+  drizzle-orm@0.44.7(better-sqlite3@12.11.1):
     optionalDependencies:
-      '@types/better-sqlite3': 7.6.13
       better-sqlite3: 12.11.1
 
   end-of-stream@1.4.5:
