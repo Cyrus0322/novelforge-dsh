@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { configFromEnv, resolveApiKey } from '../shared/config.js'
+import { configFromEnv, resolveApiKey, resolveDirectModel } from '../shared/config.js'
 import { NovelForgeError } from '../shared/errors.js'
 import { createNovelService } from '../workflow/novel-service.js'
 import type { NovelService } from '../workflow/novel-service.js'
@@ -65,7 +65,7 @@ program.command('doctor').description('检查本地运行环境（不发送 API 
     node: process.version,
     dshHostRequirement: '>=24.9.0',
     databasePath: resolve(config.databasePath),
-    model: config.model,
+    model: resolveDirectModel(config),
     baseURL: config.baseURL,
     apiKeyConfigured,
     projects: instance.store.listProjects().length,

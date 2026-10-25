@@ -115,10 +115,11 @@ pnpm run novel -- doctor
 
 | 配置字段 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `apiKey` | `DEEPSEEK_API_KEY` | 空 | **必需**；留空时从 `apiKeyEnv` 指定变量读取 |
+| `provider` | `DEEPSEEK_PROVIDER` | 空 | DSH 提供方路由；**留空=自动**（宿主默认模型 > 第一个已注册提供方） |
+| `model` | `DEEPSEEK_MODEL` | 空 | **留空=跟随 DSH 宿主默认模型**；填值则覆盖宿主选择；直连模式回退 `deepseek-chat` |
+| `apiKey` | `DEEPSEEK_API_KEY` | 空 | **仅直连回退需要**；留空时从 `apiKeyEnv` 指定变量读取 |
 | `apiKeyEnv` | — | `DEEPSEEK_API_KEY` | API Key 环境变量名 |
-| `baseURL` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容端点，自动去掉结尾斜杠 |
-| `model` | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
+| `baseURL` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 直连回退用的 OpenAI 兼容端点 |
 | `temperature` | `DEEPSEEK_TEMPERATURE` | `0.8` | 0–2；写作用 0.8，审查自动降为 `min(0.3, temperature)` |
 | `maxTokens` | `DEEPSEEK_MAX_TOKENS` | `4096` | 单次补全上限，≥256 |
 | `timeoutMs` | `DEEPSEEK_TIMEOUT_MS` | `60000` | 单次请求超时（含整体兜底超时） |
@@ -132,13 +133,27 @@ pnpm run novel -- doctor
 
 配置校验失败会抛出 `CONFIG_ERROR` 并给出具体字段，例如 `temperature 必须在 0 到 2 之间。`
 
-### 4.1 DeepSeek API 调用方式
+### 4.1 模型调用方式：优先用 DSH 自己的模型
 
-- 端点：`POST {baseURL}/chat/completions`，请求头 `Authorization: Bearer <API Key>`、`Content-Type: application/json`。
-- 请求体：`model`、`messages`、`temperature`、`max_tokens`、`stream: false`。结构化输出时额外要求模型返回 JSON。
-- 响应：读取 `choices[0].message.content`。
-- 取消：请求携带 `AbortSignal`，DSH 工具取消或 CLI 中断时立即中止。
-- 只读工具（检索、列举、导出、比较）**不需要** API Key；只有生成类工具需要。
+**默认路径走 DSH 宿主模型服务**（`ctx.llm`），不自带 Key、不自己管模型清单：
+
+- 插件通过 `ctx.get('llm')` 惰性取模型服务（未按 `inject` 声明，因此缺少该服务也不会导致插件加载失败）。
+- 调用 `ctx.llm.stream({ provider, model, messages, system, temperature, maxTokens, signal })`，逐片拼接 `text-delta`，以 `usage` / `finish` 收尾。
+- 路由优先级：**插件配置 `provider`/`model` > DSH 宿主默认模型（`ctx.agentDefaultModel.currentSelection()`）> 第一个已注册提供方（`ctx.llm.listProviders()`）**。
+- 分片失败按官方稳定 code 分诊，不解析消息文本：
+  - 可重试（指数退避）：`RATE_LIMIT`、`TIMEOUT`、`NETWORK*`、`SERVER_ERROR` 等瞬时故障；
+  - 不可重试，直接报错：`NO_ADAPTER`、`MISSING_CREDENTIAL`、`INVALID_CREDENTIAL`、`AUTH`、`QUOTA`、`ACCOUNT_QUOTA`、`CONTEXT_WINDOW_EXCEEDED`；
+  - `finish.kind === 'max-tokens'` → 提示调大 `maxTokens`。
+- 官方模型服务自身不重试，因此重试由本插件承担，上限 `maxRetries`。
+
+**回退路径（直连 DeepSeek HTTP）**只在两种情况下启用：
+
+1. 运行环境没有 `ctx.llm`（典型是独立 CLI）；
+2. 宿主没有可用提供方/模型（`NO_ADAPTER` / `NO_MODEL`），但配置了 API Key。
+
+直连细节：`POST {baseURL}/chat/completions`，请求头 `Authorization: Bearer <API Key>`；请求体含 `model`、`messages`、`temperature`、`max_tokens`、`stream: false`；响应读取 `choices[0].message.content`；请求携带 `AbortSignal`，可即时取消。
+
+只读工具（检索、列举、导出、比较）**不需要任何模型凭据**；只有生成类工具需要。
 
 ---
 

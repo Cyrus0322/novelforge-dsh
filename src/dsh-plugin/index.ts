@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG, validateRuntimeConfig } from '../shared/config.js'
 import type { RuntimeConfig } from '../shared/config.js'
 import { toJson } from '../shared/json.js'
 import { createNovelService } from '../workflow/novel-service.js'
+import { createHostLlmClient } from '../llm/dsh-llm.js'
 import type { NovelService } from '../workflow/novel-service.js'
 import { z } from 'zod'
 
@@ -29,10 +30,11 @@ export interface Config extends RuntimeConfig {}
 
 export const Config: Schema<Config> = Schema.object({
   databasePath: Schema.string().default(DEFAULT_CONFIG.databasePath),
+  provider: Schema.string().default(''),
   apiKey: Schema.string().default(''),
   apiKeyEnv: Schema.string().default(DEFAULT_CONFIG.apiKeyEnv),
   baseURL: Schema.string().default(DEFAULT_CONFIG.baseURL),
-  model: Schema.string().default(DEFAULT_CONFIG.model),
+  model: Schema.string().default(''),
   temperature: Schema.number().default(DEFAULT_CONFIG.temperature),
   maxTokens: Schema.number().default(DEFAULT_CONFIG.maxTokens),
   timeoutMs: Schema.number().default(DEFAULT_CONFIG.timeoutMs),
@@ -85,7 +87,9 @@ async function approve(ctx: Context, exec: ToolRunContext, toolName: string, rea
 }
 
 export function apply(ctx: Context, config: Config = DEFAULT_CONFIG): void {
-  const service = createNovelService(validateRuntimeConfig({ ...config }))
+  const runtimeConfig = validateRuntimeConfig({ ...config })
+  // 默认走 DSH 宿主模型服务（ctx.llm），无需插件自带 API Key。
+  const service = createNovelService(runtimeConfig, createHostLlmClient(ctx, runtimeConfig))
   ctx.effect(() => () => service.close())
   registerTools(ctx, service, config)
 }

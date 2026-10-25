@@ -1,5 +1,5 @@
 import type { RuntimeConfig } from '../shared/config.js'
-import { resolveApiKey } from '../shared/config.js'
+import { resolveApiKey, resolveDirectModel } from '../shared/config.js'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -54,7 +54,7 @@ function abortError(): LlmError {
 export class DeepSeekClient implements LlmClient {
   constructor(
     private readonly config: RuntimeConfig,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = (...args) => fetch(...args),
     private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void> = defaultSleep,
   ) {}
 
@@ -92,7 +92,7 @@ export class DeepSeekClient implements LlmClient {
             Accept: 'application/json',
           },
           body: JSON.stringify({
-            model: this.config.model,
+            model: resolveDirectModel(this.config),
             messages: request.messages,
             temperature: request.temperature ?? this.config.temperature,
             max_tokens: request.maxTokens ?? this.config.maxTokens,
@@ -134,7 +134,7 @@ export class DeepSeekClient implements LlmClient {
       }
       return {
         content,
-        model: payload.model ?? this.config.model,
+        model: payload.model ?? resolveDirectModel(this.config),
         ...(payload.usage ? {
           usage: {
             ...(payload.usage.prompt_tokens !== undefined ? { promptTokens: payload.usage.prompt_tokens } : {}),

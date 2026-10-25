@@ -26,6 +26,20 @@
 | 本地安装 | `dsh plugin --profile <name> add <package>` | 同上 |
 | 版本约束 | `engines.dsh` SemVer 范围 | 同上 |
 | 客户端 UI | Host 权威状态 + Client/Slot；不是普通工具插件的附属能力 | `docs/subsystems/web-client.zh.md` |
+| 模型调用 | `ctx.llm.stream(options)` 是「进入提供方适配器的唯一受支持路径」 | `packages/llm/llm/README.zh.md` |
+| 模型服务取值 | 通过 Cordis 模块增强挂到 `ctx.llm`；可选依赖用 `ctx.get('llm')` 惰性读取 | `packages/llm/llm/src/index.ts`（`declare module '@deepseek-ai/cordis'`）、`@deepseek-ai/cordis` `src/reflect.ts` |
+| 默认模型 | `ctx.agentDefaultModel.currentSelection()` 返回 `{ provider, model, reasoningEffort? }` | `packages/core/agent-default-model/README.zh.md` |
+| 提供方清单 | `ctx.llm.listProviders(): { id, name }[]` | `packages/llm/llm/src/index.ts` |
+| 请求参数 | `GenerateOptions`：`provider`、`model`、`messages`、`system?`、`temperature?`、`maxTokens?`、`signal?` | `packages/llm/llm/src/types.ts` |
+| 流式分片 | `StreamChunk`：`text-delta` / `usage` / `finish`；`finish.reason.kind` 为 `stop`｜`tool-calls`｜`max-tokens`｜`aborted`｜`error` | 同上 |
+| 失败分诊 | 失败携带稳定 code（`NO_ADAPTER`｜`MISSING_CREDENTIAL`｜`AUTH`｜`RATE_LIMIT`｜`CONTEXT_WINDOW_EXCEEDED`｜`QUOTA` 等），只按 code 路由 | `packages/llm/llm/README.zh.md` |
+| 重试职责 | 模型服务自身从不重试；重试属于 `dsh-llm-retry`／调用方 | 同上 |
+
+### 模型调用的适配取舍
+
+官方 `RequestMessage` 要么是带 `id`/`source` 的持久 `Message`，要么是 `RequestUserInput`（仅 user 角色）。插件拿不到持久消息构造器，因此把 `ChatMessage[]` 压成「一条 `system` + 一条 `user`」，`assistant` 轮次以 `<前一次模型输出>` 分隔符内嵌进 user 文本。这样不伪造身份字段，模型可见输入仍是请求内容的纯函数。
+
+`src/llm/dsh-llm.ts` 只按结构化契约声明 `DshLlmRuntime`，不 import `@deepseek-ai/dsh-llm`，以保持领域层与宿主实现解耦。
 
 本项目的 `src/dsh-plugin/index.ts`、`cordis.patch.yml` 和 `package.json` 按以上机制实现，没有使用不存在的 `dsh.plugin.json`。
 

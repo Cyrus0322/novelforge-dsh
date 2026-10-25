@@ -3,9 +3,12 @@ import { NovelForgeError } from './errors.js'
 
 export interface RuntimeConfig {
   databasePath: string
+  /** DSH 提供方路由；留空表示自动选择（宿主默认模型 > 第一个已注册提供方）。 */
+  provider: string
   apiKey: string
   apiKeyEnv: string
   baseURL: string
+  /** 留空表示跟随 DSH 宿主默认模型；非空则覆盖宿主选择。直连模式回退 `deepseek-chat`。 */
   model: string
   temperature: number
   maxTokens: number
@@ -20,10 +23,11 @@ export interface RuntimeConfig {
 
 export const DEFAULT_CONFIG: RuntimeConfig = {
   databasePath: './data/novelforge.db',
+  provider: '',
   apiKey: '',
   apiKeyEnv: 'DEEPSEEK_API_KEY',
   baseURL: 'https://api.deepseek.com',
-  model: 'deepseek-chat',
+  model: '',
   temperature: 0.8,
   maxTokens: 4096,
   timeoutMs: 60_000,
@@ -37,6 +41,7 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
 
 const environmentSchema = z.object({
   DEEPSEEK_API_KEY: z.string().optional(),
+  DEEPSEEK_PROVIDER: z.string().optional(),
   DEEPSEEK_BASE_URL: z.string().url().optional(),
   DEEPSEEK_MODEL: z.string().min(1).optional(),
   DEEPSEEK_TEMPERATURE: z.coerce.number().min(0).max(2).optional(),
@@ -75,6 +80,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): RuntimeConf
   return validateRuntimeConfig({
     ...DEFAULT_CONFIG,
     apiKey: value.DEEPSEEK_API_KEY ?? '',
+    provider: value.DEEPSEEK_PROVIDER ?? DEFAULT_CONFIG.provider,
     baseURL: value.DEEPSEEK_BASE_URL ?? DEFAULT_CONFIG.baseURL,
     model: value.DEEPSEEK_MODEL ?? DEFAULT_CONFIG.model,
     temperature: value.DEEPSEEK_TEMPERATURE ?? DEFAULT_CONFIG.temperature,
@@ -98,4 +104,9 @@ export function resolveApiKey(config: RuntimeConfig, env: NodeJS.ProcessEnv = pr
     )
   }
   return key
+}
+
+/** 直连 DeepSeek 时使用的模型：未显式配置则回退官方默认，避免空模型名发出无效请求。 */
+export function resolveDirectModel(config: RuntimeConfig): string {
+  return config.model.trim() || 'deepseek-chat'
 }

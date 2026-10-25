@@ -5,7 +5,9 @@
         databasePath: ./data/novelforge.db
         apiKeyEnv: DEEPSEEK_API_KEY
         baseURL: https://api.deepseek.com
-        model: deepseek-chat
+        # provider / model 留空 = 跟随 DSH 宿主默认模型（推荐）；填值则覆盖宿主选择
+        provider: ""
+        model: ""
         temperature: 0.8
         maxTokens: 4096
         timeoutMs: 60000
