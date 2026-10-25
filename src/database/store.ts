@@ -118,7 +118,7 @@ export interface ProjectInput {
   themes?: string[] | undefined
 }
 
-export type ProposalTargetType = 'entity' | 'event' | 'foreshadowing' | 'relation' | 'thread'
+export type ProposalTargetType = 'entity' | 'event' | 'foreshadowing' | 'relation' | 'thread' | 'knowledge'
 
 export interface ProposalInput {
   projectId: string
@@ -593,6 +593,23 @@ export class NovelStore {
           ...(payload.notes === undefined ? {} : { notes: payload.notes }),
         })
       }
+    } else if (proposal.targetType === 'knowledge') {
+      const proposition = payload.proposition?.trim()
+      if (!proposition) throw new NovelForgeError('INVALID_INPUT', '知情事实提议必须包含 proposition。')
+      const knowers = (payload.knowers ?? [])
+        .map(entry => {
+          const entityId = this.resolveEntityIdByName(proposal.projectId, entry.name)
+          return entityId ? { entityId, state: entry.state } : null
+        })
+        .filter((entry): entry is { entityId: string; state: 'knows' | 'suspects' | 'misbelieves' | 'unaware' } => entry !== null)
+      this.createKnowledge({
+        projectId: proposal.projectId,
+        proposition,
+        ...(payload.truth === undefined ? {} : { truth: payload.truth }),
+        ...(payload.publicLevel === undefined ? {} : { publicLevel: payload.publicLevel }),
+        ...(proposal.chapterId === undefined || proposal.chapterId === null ? {} : { chapterId: proposal.chapterId }),
+        knowers,
+      })
     } else if (proposal.targetType === 'thread') {
       const timestamp = now()
       const name = payload.name?.trim()

@@ -11,6 +11,8 @@ const RULES = [
   '数字、等级、时间、金额必须与素材完全一致，不做换算或四舍五入。',
   '区分事实与传闻：素材里如果是角色说的话，仍按素材陈述记录，不要升级为确定事实。',
   'relationship 只能建立在素材中同时出现过的两个人物/势力之间。',
+  'knowledge 用来记录「谁知道什么」：凡是素材里出现『秘密、隐瞒、误会、只有某人知道』这类信息，就要抽一条；knowers 里的人物名必须也在素材里出现过。',
+  'knowledge.state 取值：knows=知道、suspects=怀疑、misbelieves=误信、unaware=不知道；truth 表示这条信息本身是否属实（true/partial/false），不要和公开度混淆。',
   '同一实体不要重复列出；人物写 kind=character，地点 location，势力 faction，物品 item，规则 world_rule，其它 other。',
   '最多输出 40 个实体、20 条关系、20 个事件、10 条伏笔、8 条剧情线；信息量超载时优先保留主角、核心冲突与关键道具。',
   '只输出一个合法 JSON 对象，不要 Markdown 代码围栏，不要任何解释。',
@@ -57,6 +59,7 @@ export function ingestMessages(context: IngestPromptContext): ChatMessage[] {
   "events": [{"summary":"发生了什么","eventTime":"故事内时间，没有就省略","participants":["..."],"importance":1-5,"evidence":"原文短句"}],
   "foreshadowing": [{"name":"...","description":"...","category":"道具|对话|场景|预言","importance":1-5,"evidence":"原文短句"}],
   "threads": [{"name":"...","threadKind":"main|sub|romance|mystery|revenge|growth","goal":"...","summary":"...","evidence":"原文短句"}],
+  "knowledge": [{"proposition":"谁知道什么的那个事实","truth":"true|partial|false","publicLevel":"secret|circle|organization|public","knowers":[{"name":"人物或势力名","state":"knows|suspects|misbelieves|unaware"}],"evidence":"原文短句"}],
   "conflicts": [{"type":"setting|character|timeline|naming","description":"素材内部或与已有资料矛盾之处","evidence":"..."}]
 }`,
       ].filter(Boolean).join('\n'),

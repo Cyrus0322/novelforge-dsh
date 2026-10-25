@@ -122,7 +122,7 @@ function parseStats(json: string): Partial<IngestStats> {
 
 function extractedCount(stats: Partial<IngestStats>): number {
   return (stats.entities ?? 0) + (stats.relations ?? 0) + (stats.events ?? 0)
-    + (stats.foreshadowing ?? 0) + (stats.threads ?? 0)
+    + (stats.foreshadowing ?? 0) + (stats.threads ?? 0) + (stats.knowledge ?? 0)
 }
 
 function statsLine(stats: Partial<IngestStats>): string {
@@ -132,6 +132,7 @@ function statsLine(stats: Partial<IngestStats>): string {
     `事件 ${stats.events ?? 0}`,
     `伏笔 ${stats.foreshadowing ?? 0}`,
     `剧情线 ${stats.threads ?? 0}`,
+    `知情 ${stats.knowledge ?? 0}`,
     `丢弃 ${stats.dropped ?? 0}`,
     `矛盾 ${stats.conflicts ?? 0}`,
   ]
@@ -484,6 +485,7 @@ export function IngestPage({ projectId, navigate }: PageProps) {
                 <Stat label="事件" value={outcomeStats.events} />
                 <Stat label="伏笔" value={outcomeStats.foreshadowing} />
                 <Stat label="剧情线" value={outcomeStats.threads} />
+                <Stat label="知情" value={outcomeStats.knowledge ?? 0} />
                 <Stat label="丢弃" value={outcomeStats.dropped} tone={outcomeStats.dropped > 0 ? 'warn' : undefined} />
                 <Stat label="内部矛盾" value={outcomeStats.conflicts} tone={outcomeStats.conflicts > 0 ? 'danger' : undefined} />
               </div>

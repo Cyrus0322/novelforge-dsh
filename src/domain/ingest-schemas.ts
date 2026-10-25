@@ -63,6 +63,17 @@ export const ingestThreadSchema = z.object({
   evidence: evidenceSchema,
 })
 
+export const ingestKnowledgeSchema = z.object({
+  proposition: z.string().min(2).max(300),
+  truth: z.enum(['true', 'partial', 'false']).optional(),
+  publicLevel: z.enum(['secret', 'circle', 'organization', 'public']).optional(),
+  knowers: z.array(z.object({
+    name: z.string().min(1).max(80),
+    state: z.enum(['knows', 'suspects', 'misbelieves', 'unaware']),
+  })).max(12).optional(),
+  evidence: evidenceSchema,
+})
+
 export const ingestProjectPatchSchema = z.object({
   premise: z.string().max(2000).optional(),
   styleGuide: z.string().max(3000).optional(),
@@ -78,6 +89,7 @@ export const ingestExtractionSchema = z.object({
   events: z.array(ingestEventSchema).max(60).default([]),
   foreshadowing: z.array(ingestForeshadowingSchema).max(30).default([]),
   threads: z.array(ingestThreadSchema).max(20).default([]),
+  knowledge: z.array(ingestKnowledgeSchema).max(30).default([]),
   conflicts: z.array(z.object({
     type: z.string().max(30),
     description: z.string().max(400),
@@ -94,6 +106,7 @@ export interface IngestStats {
   events: number
   foreshadowing: number
   threads: number
+  knowledge: number
   projectPatch: number
   dropped: number
   conflicts: number

@@ -1,6 +1,6 @@
 import type {
   AuditEntry, ChangeProposal, Chapter, ChapterDetail, ChapterRevision, ChapterSummary, CompareResult, ContextMeta,
-  ContextPack, Entity, Foreshadowing, HealthInfo, IngestBatch, IngestOutcome, Outline, PlotThread, Project,
+  ContextPack, Entity, Foreshadowing, HealthInfo, IngestBatch, IngestOutcome, KnowledgeFact, Outline, PlotThread, Project,
   ProjectOverview, Relation, ReviewIssue, ReviewRun, ReviewRunSummary, Scene, SearchResult, StoryEvent, WorkflowRun,
 } from './types.ts'
 
@@ -201,6 +201,17 @@ export const api = {
     request<Relation>('POST', `/api/projects/${enc(projectId)}/relations`, input),
   updateRelation: (relationId: string, patch: { kind?: string; tension?: string; notes?: string; status?: string; expectedVersion?: number }) =>
     request<Relation>('PATCH', `/api/relations/${enc(relationId)}`, patch),
+
+  listKnowledge: (projectId: string) => request<KnowledgeFact[]>('GET', `/api/projects/${enc(projectId)}/knowledge`),
+  createKnowledge: (projectId: string, input: { proposition: string; truth?: string; publicLevel?: string; chapterId?: string | null; knowers?: Array<{ entityId: string; state: string }>; notes?: string }) =>
+    request<KnowledgeFact>('POST', `/api/projects/${enc(projectId)}/knowledge`, input),
+  updateKnowledge: (factId: string, patch: { proposition?: string; truth?: string; publicLevel?: string; chapterId?: string | null; knowers?: Array<{ entityId: string; state: string }>; notes?: string; expectedVersion?: number }) =>
+    request<KnowledgeFact>('PATCH', `/api/knowledge/${enc(factId)}`, patch),
+  deleteKnowledge: (factId: string) => request<{ ok: true }>('DELETE', `/api/knowledge/${enc(factId)}`),
+  listOverdueForeshadowing: (projectId: string) =>
+    request<Array<Foreshadowing & { deadlineChapterId: number; progressChapterNo: number }>>('GET', `/api/projects/${enc(projectId)}/foreshadowing-overdue`),
+  deleteRelation: (relationId: string) => request<{ ok: true }>('DELETE', `/api/relations/${enc(relationId)}`),
+  deleteThread: (threadId: string) => request<{ ok: true }>('DELETE', `/api/threads/${enc(threadId)}`),
 
   listThreads: (projectId: string) => request<PlotThread[]>('GET', `/api/projects/${enc(projectId)}/threads`),
   createThread: (projectId: string, input: { name: string; kind?: string; goal?: string; summary?: string }) =>

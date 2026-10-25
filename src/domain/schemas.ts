@@ -108,13 +108,22 @@ export const changePayloadSchema = z.object({
   sourceName: z.string().optional(),
   targetName: z.string().optional(),
   relationType: z.string().optional(),
+  // 知情事实
+  proposition: z.string().optional(),
+  truth: z.enum(['true', 'partial', 'false']).optional(),
+  publicLevel: z.enum(['secret', 'circle', 'organization', 'public']).optional(),
+  knowers: z.array(z.object({
+    name: z.string().min(1),
+    state: z.enum(['knows', 'suspects', 'misbelieves', 'unaware']),
+  })).optional(),
   tension: z.string().optional(),
   threadKind: z.enum(['main', 'sub', 'romance', 'mystery', 'revenge', 'growth']).optional(),
 }).refine(
   value => Boolean(
     value.name?.trim() || value.summary?.trim() || value.description?.trim() || value.eventTime?.trim()
     || value.goal?.trim() || value.role?.trim() || value.notes?.trim()
-    || value.sourceName?.trim() || value.relationType?.trim() || value.threadKind?.trim(),
+    || value.sourceName?.trim() || value.relationType?.trim() || value.threadKind?.trim()
+    || value.proposition?.trim(),
   ),
   '变更 payload 至少需要 name / summary / description / eventTime 之一，不能是空对象。',
 )

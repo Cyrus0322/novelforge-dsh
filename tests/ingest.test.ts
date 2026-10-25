@@ -131,6 +131,46 @@ describe('素材导入 ingest', () => {
     expect(service.store.getProject(project.id).premise).toContain('折寿')
   })
 
+  it('能从素材里抽「谁知道什么」，并解析知情者', async () => {
+    const material = '林渊每次回响会折寿三日。这件事只有他自己知道，沈砚一直蒙在鼓里。'
+    const payload = {
+      entities: [
+        { kind: 'character', name: '林渊', summary: '外勤', evidence: '林渊每次回响会折寿三日' },
+        { kind: 'character', name: '沈砚', summary: '搭档', evidence: '沈砚一直蒙在鼓里' },
+      ],
+      knowledge: [
+        {
+          proposition: '林渊每次回响会折寿三日',
+          truth: 'true',
+          publicLevel: 'secret',
+          knowers: [{ name: '林渊', state: 'knows' }, { name: '沈砚', state: 'unaware' }],
+          evidence: '这件事只有他自己知道，沈砚一直蒙在鼓里',
+        },
+        {
+          proposition: '林渊是镇魔司暗桩',
+          knowers: [{ name: '不存在的人', state: 'knows' }],
+          evidence: '林渊每次回响会折寿三日',
+        },
+      ],
+      relations: [], events: [], foreshadowing: [], threads: [], conflicts: [],
+    }
+    const service = makeService(payload)
+    const project = service.createProject({ title: '归墟', genre: '都市异能' })
+    const outcome = await service.ingestMaterial(project.id, { material })
+
+    // 一条正常生成提议；另一条知情者名字在素材里找不到 → 丢弃
+    expect(outcome.stats.knowledge).toBe(1)
+    expect(outcome.stats.droppedReasons.knowledge_unknown_knower).toBe(1)
+    expect(outcome.proposals.some(proposal => proposal.targetType === 'knowledge')).toBe(true)
+
+    service.applyIngestBatch(outcome.batch.id, true)
+    const facts = service.store.listKnowledge(project.id)
+    expect(facts).toHaveLength(1)
+    expect(facts[0]?.proposition).toContain('折寿')
+    const states = facts[0]?.knowers.map(entry => `${entry.name}:${entry.state}`).sort()
+    expect(states).toEqual(['沈砚:unaware', '林渊:knows'].sort())
+  })
+
   it('素材太短会被拒绝，不会产生空批次', async () => {
     const service = makeService(extraction)
     const project = service.createProject({ title: '归墟', genre: '都市异能' })

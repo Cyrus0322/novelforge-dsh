@@ -90,7 +90,7 @@ export async function runIngest(
   const existingForeshadowing = store.listForeshadowing(projectId)
 
   const stats: IngestStats = {
-    entities: 0, relations: 0, events: 0, foreshadowing: 0, threads: 0,
+    entities: 0, relations: 0, events: 0, foreshadowing: 0, threads: 0, knowledge: 0,
     projectPatch: 0, dropped: 0, conflicts: 0, droppedReasons: {},
   }
   const drop = (reason: string): void => {
@@ -253,6 +253,32 @@ export async function runIngest(
         stats.threads += 1
       } catch (error) {
         metricsFail(stats, 'thread_proposal_failed', error)
+      }
+    }
+
+    // —— 知情事实（谁知道什么）——
+    for (const item of data.knowledge) {
+      if (!evidenceSupported(item.evidence, haystack)) { drop('knowledge_evidence_missing'); continue }
+      // 只保留能在本批或资料库里找到名字的知情者，避免脏数据
+      const knowers = (item.knowers ?? []).filter(knower => {
+        const key = knower.name.trim().toLowerCase()
+        return entityIdByName.has(key) || namesInBatch.has(key)
+      })
+      if ((item.knowers ?? []).length > 0 && knowers.length === 0) { drop('knowledge_unknown_knower'); continue }
+      try {
+        store.proposeChange({
+          projectId, targetType: 'knowledge', operation: 'create',
+          payload: {
+            proposition: item.proposition,
+            ...(item.truth === undefined ? {} : { truth: item.truth }),
+            ...(item.publicLevel === undefined ? {} : { publicLevel: item.publicLevel }),
+            ...(knowers.length ? { knowers } : {}),
+          },
+          batchId: batch.id, source: 'ai_ingest',
+        })
+        stats.knowledge += 1
+      } catch (error) {
+        metricsFail(stats, 'knowledge_proposal_failed', error)
       }
     }
 

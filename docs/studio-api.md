@@ -645,3 +645,30 @@ SearchResult  { recordId, recordType, sourceId, status, snippet }
 
 `GET /api/projects/:projectId/export.md` 返回**纯文本 Markdown**（不是 JSON 信封），只含已定稿章节；
 面板顶栏「导出」会把它下载为 `<书名>.md`。
+
+---
+
+## 11. 0.8.0 变更
+
+### 11.1 提议类型扩展
+
+`POST /api/projects/:projectId/proposals` 的 `targetType` 现支持 **6 种**：
+`entity` / `event` / `foreshadowing` / `relation` / `thread` / `knowledge`。
+
+| targetType | payload 关键字段 | 应用时行为 |
+| --- | --- | --- |
+| `relation` | `sourceId?`/`targetId?` 或 `sourceName`/`targetName`、`relationType`、`tension?` | 两端缺 ID 时按名字/别名解析；已存在则更新张力 |
+| `thread` | `name`、`threadKind?`、`goal?`、`summary?` | 同名更新，否则新建 |
+| `knowledge` | `proposition`、`truth?`、`publicLevel?`、`knowers?: [{name,state}]` | 知情者名字→ID 解析后写入知情矩阵 |
+
+批量应用顺序固定为：**实体 → 剧情线 → 伏笔 → 事件 → 知情 → 关系**，保证同批数据能正确解析引用。
+
+### 11.2 素材导入新增知情抽取
+
+`POST /api/projects/:projectId/ingest` 的 `stats` 新增 `knowledge` 计数；
+丢弃原因新增 `knowledge_evidence_missing` 与 `knowledge_unknown_knower`。
+
+### 11.3 审查器新增知情检查
+
+`POST /api/revisions/:revisionId/review` 的确定性检查里新增「信息来源不明」：
+角色提到自己 `unaware` 的事实 → `category=character`、`severity=major`、`evidence[].sourceId` 指向知情事实。

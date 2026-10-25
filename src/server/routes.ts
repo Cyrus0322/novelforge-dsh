@@ -422,8 +422,8 @@ export function buildRoutes(deps: RouteDeps): Route[] {
   add('POST', '/api/projects/:projectId/proposals', async context => {
     const body = await context.body()
     const targetType = requireString(body, 'targetType', '目标类型')
-    if (targetType !== 'entity' && targetType !== 'event' && targetType !== 'foreshadowing') {
-      throw new NovelForgeError('INVALID_INPUT', 'targetType 只能是 entity / event / foreshadowing。')
+    if (!['entity', 'event', 'foreshadowing', 'relation', 'thread', 'knowledge'].includes(targetType)) {
+      throw new NovelForgeError('INVALID_INPUT', 'targetType 只能是 entity / event / foreshadowing / relation / thread / knowledge。')
     }
     const operation = requireString(body, 'operation', '操作')
     if (operation !== 'create' && operation !== 'update') {
@@ -431,7 +431,7 @@ export function buildRoutes(deps: RouteDeps): Route[] {
     }
     return store.proposeChange({
       projectId: context.params.projectId as string,
-      targetType,
+      targetType: targetType as 'entity' | 'event' | 'foreshadowing' | 'relation' | 'thread' | 'knowledge',
       operation,
       payload: attributes(body, 'payload') ?? {},
       targetId: optionalString(body, 'targetId'),

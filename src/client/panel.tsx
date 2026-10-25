@@ -55,7 +55,7 @@ interface Foreshadowing {
   plantChapterId: string | null; payoffChapterId: string | null
 }
 interface PlotThread { id: string; name: string; kind: string; goal: string; summary: string; status: string; version: number }
-interface Relation { id: string; sourceName: string; targetName: string; kind: string; tension: string; status: string }
+interface Relation { id: string; sourceName: string; targetName: string; kind: string; tension: string; status: string; version: number }
 interface Scene {
   id: string; sceneNo: number; beat: string; goal: string; conflict: string; outcome: string
   castNames: string[]; status: string; version: number
@@ -86,7 +86,7 @@ interface IngestBatch {
 }
 interface IngestOutcome {
   batch: IngestBatch
-  stats: { entities: number; relations: number; events: number; foreshadowing: number; threads: number; dropped: number; conflicts: number; droppedReasons: Record<string, number>; conflictList?: Array<{ type: string; description: string; evidence?: string }>; truncated?: boolean }
+  stats: { entities: number; relations: number; events: number; foreshadowing: number; threads: number; knowledge: number; dropped: number; conflicts: number; droppedReasons: Record<string, number>; conflictList?: Array<{ type: string; description: string; evidence?: string }>; truncated?: boolean }
   proposals: Proposal[]
 }
 
@@ -157,7 +157,7 @@ const KIND_TEXT: Record<string, string> = {
 const THREAD_TEXT: Record<string, string> = {
   main: '主线', sub: '支线', romance: '感情', mystery: '悬疑', revenge: '复仇', growth: '成长',
 }
-const TARGET_TEXT: Record<string, string> = { entity: '资料', event: '事件', foreshadowing: '伏笔', relation: '关系', thread: '剧情线' }
+const TARGET_TEXT: Record<string, string> = { entity: '资料', event: '事件', foreshadowing: '伏笔', relation: '关系', thread: '剧情线', knowledge: '知情' }
 
 function text(value: string): string { return STATUS_TEXT[value] ?? value }
 function toneOf(status: string): string {
@@ -275,7 +275,7 @@ export function NovelForgePanel() {
   const [entityDraft, setEntityDraft] = useState<Partial<Entity> | null>(null)
   const [newChapterTitle, setNewChapterTitle] = useState<string | null>(null)
   const [threadDraft, setThreadDraft] = useState<Partial<PlotThread> | null>(null)
-  const [relationDraft, setRelationDraft] = useState<{ sourceId: string; targetId: string; kind: string; tension: string } | null>(null)
+  const [relationDraft, setRelationDraft] = useState<{ id?: string; version?: number; sourceId: string; targetId: string; kind: string; tension: string } | null>(null)
   const [sceneDraft, setSceneDraft] = useState<Partial<Scene> | null>(null)
   const [knowledgeDraft, setKnowledgeDraft] = useState<Partial<KnowledgeFact> | null>(null)
   const [eventDraft, setEventDraft] = useState<{ id?: string; summary: string; eventTime: string; status: string; version?: number } | null>(null)
@@ -487,8 +487,26 @@ export function NovelForgePanel() {
   }
   const saveRelation = async (): Promise<void> => {
     if (!relationDraft || !projectId) return
-    const ok = await act('relation', () => apiCall('POST', `/api/projects/${projectId}/relations`, relationDraft), '已创建关系')
+    const ok = relationDraft.id
+      ? await act('relation', () => apiCall('PATCH', `/api/relations/${relationDraft.id}`, {
+        kind: relationDraft.kind, tension: relationDraft.tension, expectedVersion: relationDraft.version,
+      }), '已保存关系')
+      : await act('relation', () => apiCall('POST', `/api/projects/${projectId}/relations`, {
+        sourceId: relationDraft.sourceId, targetId: relationDraft.targetId,
+        kind: relationDraft.kind, tension: relationDraft.tension,
+      }), '已创建关系')
     if (ok) setRelationDraft(null)
+  }
+
+  // ── AI 批量规划大纲 ──
+  const planOutline = async (): Promise<void> => {
+    if (!projectId) return
+    const raw = window.prompt('要规划多少章？（1–100）', '10')
+    if (raw === null) return
+    const count = Number(raw)
+    if (!Number.isInteger(count) || count < 1 || count > 100) { setError('章节数必须是 1–100 的整数。'); return }
+    if (!window.confirm(`让 AI 规划 ${count} 章并写入卷纲/章纲/章节记录？`)) return
+    await act('plan', () => apiCall('POST', `/api/projects/${projectId}/outlines/plan`, { chapterCount: count }), `已规划 ${count} 章`)
   }
   const saveScene = async (): Promise<void> => {
     if (!sceneDraft || !reader) return
@@ -860,7 +878,10 @@ export function NovelForgePanel() {
         <div style={{ overflow: 'auto', flex: 1 }}>
           {tab === 'chapters' && (
             <div style={{ padding: '6px 10px' }}>
-              <button type="button" style={{ ...btnStyle, marginBottom: 8 }} onClick={() => setNewChapterTitle('')}>+ 新建章节</button>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                <button type="button" style={btnStyle} onClick={() => setNewChapterTitle('')}>+ 新建章节</button>
+                {aiReady && <button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void planOutline() }}>{busy === 'plan' ? '规划中…' : 'AI 规划后续章节'}</button>}
+              </div>
               {chapters.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有章节。</div>}
               {chapters.map(item => (
                 <Row key={item.chapter.id} onClick={() => { void openChapter(item.chapter.id) }}>
@@ -931,6 +952,7 @@ export function NovelForgePanel() {
                     <span style={{ color: C.muted }}>—{relation.kind}→</span>
                     <strong style={{ fontWeight: 500 }}>{relation.targetName}</strong>
                     <div style={{ flex: 1 }} />
+                    <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => setRelationDraft({ id: relation.id, version: relation.version, sourceId: '', targetId: '', kind: relation.kind, tension: relation.tension })}>编辑</button>
                     <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11, color: C.danger }} onClick={() => { void deleteRelation(relation) }}>删除</button>
                   </div>
                   {relation.tension && <div style={{ color: C.dim, fontSize: 12, marginTop: 3 }}>张力：{relation.tension}</div>}
@@ -1060,6 +1082,7 @@ export function NovelForgePanel() {
                       <Pill color={C.ok}>事件 {ingestResult.stats.events}</Pill>
                       <Pill color={C.ok}>伏笔 {ingestResult.stats.foreshadowing}</Pill>
                       <Pill color={C.ok}>剧情线 {ingestResult.stats.threads}</Pill>
+                      <Pill color={C.ok}>知情 {ingestResult.stats.knowledge}</Pill>
                       {ingestResult.stats.dropped > 0 && <Pill color={C.warn}>丢弃 {ingestResult.stats.dropped}</Pill>}
                       {ingestResult.stats.conflicts > 0 && <Pill color={C.danger}>矛盾 {ingestResult.stats.conflicts}</Pill>}
                     </div>
@@ -1353,20 +1376,21 @@ export function NovelForgePanel() {
 
       {relationDraft && (
         <Modal title="新建人物关系" onClose={() => setRelationDraft(null)}
-          footer={<><button type="button" style={btnStyle} onClick={() => setRelationDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null || !relationDraft.sourceId || !relationDraft.targetId} onClick={() => { void saveRelation() }}>保存</button></>}>
+          footer={<><button type="button" style={btnStyle} onClick={() => setRelationDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null || (!relationDraft.id && (!relationDraft.sourceId || !relationDraft.targetId))} onClick={() => { void saveRelation() }}>保存</button></>}>
           <div style={{ display: 'grid', gap: 10 }}>
-            <Field label="起点">
+            {relationDraft.id && <div style={{ color: C.muted, fontSize: 11 }}>两端不可改（如需换人，删掉重建）。</div>}
+            {!relationDraft.id && (<Field label="起点">
               <select style={inputStyle} value={relationDraft.sourceId} onChange={event => setRelationDraft({ ...relationDraft, sourceId: event.target.value })}>
                 <option value="">选择…</option>
                 {entities.map(entity => <option key={entity.id} value={entity.id}>{entity.name}</option>)}
               </select>
-            </Field>
-            <Field label="终点">
+            </Field>)}
+            {!relationDraft.id && (<Field label="终点">
               <select style={inputStyle} value={relationDraft.targetId} onChange={event => setRelationDraft({ ...relationDraft, targetId: event.target.value })}>
                 <option value="">选择…</option>
                 {entities.map(entity => <option key={entity.id} value={entity.id}>{entity.name}</option>)}
               </select>
-            </Field>
+            </Field>)}
             <Field label="关系类型"><input style={inputStyle} value={relationDraft.kind} onChange={event => setRelationDraft({ ...relationDraft, kind: event.target.value })} placeholder="搭档 / 师徒 / 敌对 / 父子…" /></Field>
             <Field label="张力"><input style={inputStyle} value={relationDraft.tension} onChange={event => setRelationDraft({ ...relationDraft, tension: event.target.value })} placeholder="例如：曾隐瞒上级命令" /></Field>
           </div>

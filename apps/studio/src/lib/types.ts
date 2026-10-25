@@ -255,6 +255,7 @@ export interface ProjectOverview {
     threads: number
     scenes: number
     ingestBatches: number
+    overdueForeshadowing: number
   }
   currentChapter: Chapter | null
   openIssues: Array<ReviewIssue & { chapterId: string; chapterNo: number; chapterTitle: string }>
@@ -343,6 +344,7 @@ export interface IngestStats {
   events: number
   foreshadowing: number
   threads: number
+  knowledge: number
   projectPatch: number
   dropped: number
   conflicts: number
@@ -374,4 +376,25 @@ export interface IngestOutcome {
   stats: IngestStats
   proposals: ChangeProposal[]
   applied?: { applied: string[]; failed: Array<{ id: string; error: string }> }
+}
+
+export interface KnowerEntry {
+  entityId: string
+  state: 'knows' | 'suspects' | 'misbelieves' | 'unaware'
+  sinceChapterId?: string | null
+  notes?: string
+}
+
+export interface KnowledgeFact {
+  id: string
+  projectId: string
+  proposition: string
+  truth: string
+  publicLevel: string
+  chapterId: string | null
+  chapterNo: number | null
+  notes: string
+  version: number
+  updatedAt: string
+  knowers: Array<KnowerEntry & { name: string }>
 }

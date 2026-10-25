@@ -136,7 +136,10 @@ export class NovelService {
         messages: reviewMessages(context.text, revision.content),
         temperature: Math.min(0.3, this.config.temperature), maxTokens: Math.min(this.config.maxTokens, 4096),
       }, reviewResultSchema, signal)
-      const deterministic = this.deterministicChecks(chapter.projectId, revision.content)
+      const deterministic = [
+        ...this.deterministicChecks(chapter.projectId, revision.content),
+        ...this.knowledgeChecks(chapter.projectId, revision.content),
+      ]
       const result: ReviewResult = { summary: data.summary, issues: [...deterministic, ...data.issues] }
       const saved = this.store.createReview(revisionId, result)
       this.store.checkpointWorkflow(runId, 'reviewed', { reviewRunId: saved.run.id, issueCount: saved.issues.length })
@@ -214,6 +217,63 @@ export class NovelService {
     const chapters = this.store.listFinalChapters(projectId)
     const body = chapters.map(({ chapter, revision }) => `## 第${chapter.chapterNo}章 ${chapter.title}\n\n${revision.content}`).join('\n\n')
     return `# ${project.title}\n\n> ${project.premise}\n\n${body}\n`
+  }
+
+  /**
+   * 知情矩阵检查：角色在正文里提到自己「不知道」的事 → 信息泄露（人物开天眼）。
+   * 做法是确定性的：以人物名出现的位置为锚，取前后窗口，看窗口里是否命中事实的 n-gram 关键词；
+   * 至少命中 2 个不同的 3 字片段才报，避免单个常见词造成误报。
+   */
+  private knowledgeChecks(projectId: string, content: string): ReviewIssueInput[] {
+    const issues: ReviewIssueInput[] = []
+    const facts = this.store.listKnowledge(projectId)
+    if (!facts.length) return issues
+    const entities = this.store.listEntities(projectId)
+    const nameById = new Map(entities.map(entity => [entity.id, entity.name]))
+    const entityNames = new Set(entities.map(entity => entity.name))
+
+    const gramsOf = (proposition: string): string[] => {
+      const cleaned = proposition.replace(/[\s，。、；：！？（）()「」“”"'’·…—]/g, '')
+      const size = cleaned.length >= 4 ? 3 : 2
+      const grams = new Set<string>()
+      for (let index = 0; index + size <= cleaned.length; index += 1) {
+        const gram = cleaned.slice(index, index + size)
+        if (entityNames.has(gram)) continue
+        grams.add(gram)
+      }
+      return [...grams]
+    }
+
+    for (const fact of facts) {
+      const grams = gramsOf(fact.proposition)
+      if (!grams.length) continue
+      for (const knower of fact.knowers) {
+        if (knower.state !== 'unaware') continue
+        const name = nameById.get(knower.entityId)
+        if (!name) continue
+        let cursor = content.indexOf(name)
+        while (cursor >= 0) {
+          const windowText = content.slice(Math.max(0, cursor - 160), cursor + name.length + 160)
+          const matched = grams.filter(gram => windowText.includes(gram))
+          if (matched.length >= 2) {
+            const anchor = windowText.indexOf(matched[0] as string)
+            const start = anchor >= 0 ? Math.max(0, cursor - 160) + anchor : cursor
+            issues.push({
+              category: 'character',
+              severity: 'major',
+              start,
+              end: start + Math.max(...matched.map(gram => gram.length)),
+              issue: `${name} 在正文中涉及「${fact.proposition}」，但知情矩阵里TA对该事实是「不知道」，属于信息来源不明。`,
+              evidence: [{ sourceId: fact.id, description: `知情事实：${fact.proposition}（${name}=不知道）` }],
+              suggestedFix: `要么删掉/改写 ${name} 相关段落，要么在正文里补一个TA获知该信息的场景，再把知情矩阵改成「知道」。`,
+            })
+            break
+          }
+          cursor = content.indexOf(name, cursor + name.length)
+        }
+      }
+    }
+    return issues
   }
 
   private deterministicChecks(projectId: string, content: string): ReviewIssueInput[] {
