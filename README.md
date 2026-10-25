@@ -81,10 +81,13 @@ novelforge-dsh/
 ```sh
 pnpm install
 pnpm run build
-dsh plugin --profile novel add "$PWD"
+dsh plugin --profile novel add "$PWD"         # 本地 checkout
+dsh plugin --profile novel add novelforge-dsh # 或直接从 npm 安装
 dsh --profile novel --dump-config     # 应出现 novelforge-dsh 层与 novelforge 行
 dsh --profile novel web
 ```
+
+**pnpm 用户注意原生依赖**：本包依赖 `better-sqlite3`。pnpm 10+ 默认拦截依赖构建脚本，首次安装可能报 `ERR_PNPM_IGNORED_BUILDS`，且 bundle 不会被注册。处理方式：把 `~/.dsh/profiles/<name>/pnpm-workspace.yaml` 里的占位值改成 `allowBuilds: { better-sqlite3: true }`，再重新执行 `dsh plugin --profile <name> add novelforge-dsh`。若出现 `atomic-write: timed out waiting for the writer lock`，删除该目录下的 `package.json.lock` 后重试。npm 用户不受此影响。
 
 随后在会话中要求模型调用 `novel_list_projects` 或 `novel_search` 验证。
 
