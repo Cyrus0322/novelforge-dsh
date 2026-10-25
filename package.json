@@ -1,6 +1,6 @@
 {
   "name": "novelforge-dsh",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A persistent, human-approved long-form novel writing plugin for DeepSeek Harness",
   "author": "Cyrus0322",
   "license": "MIT",
@@ -68,7 +68,6 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "~3.18.5",
-    "better-sqlite3": "^12.4.1",
     "commander": "^14.0.2",
     "diff": "^8.0.2",
     "dotenv": "^17.2.3",
@@ -78,13 +77,13 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3"
+    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3",
+    "better-sqlite3": "^12.4.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
     "@deepseek-ai/dsh-user-approval": "0.2.1-rc.3",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/diff": "^7.0.2",
     "@types/node": "^24.10.1",
     "tsx": "^4.21.0",
@@ -92,5 +91,9 @@
     "vitest": "^4.0.15"
   },
   "packageManager": "pnpm@11.7.0",
-  "license": "MIT"
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  }
 }

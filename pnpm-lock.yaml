@@ -39,9 +39,6 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: 0.2.1-rc.3
         version: 0.2.1-rc.3(f3a61cdc614c420235807a61121b4b4a)
-      '@types/better-sqlite3':
-        specifier: ^7.6.13
-        version: 7.6.13
       '@types/diff':
         specifier: ^7.0.2
         version: 7.0.2
@@ -1334,6 +1331,7 @@ snapshots:
   '@types/better-sqlite3@7.6.13':
     dependencies:
       '@types/node': 24.19.2
+    optional: true
 
   '@types/chai@5.2.3':
     dependencies:

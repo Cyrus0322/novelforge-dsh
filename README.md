@@ -2,7 +2,7 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.1.0`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.2.1`。
 GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>
 
 ---
@@ -15,7 +15,8 @@ GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.np
 | Node.js | DSH 宿主：`>=24.9.0` | 官方根包 `package.json` 的 `engines` 要求；**本机已升级至 v24.22.1 并实测通过** |
 | pnpm | `11.7.0` | 本机实测；仓库源码自身要求 `11.28.5` |
 | TypeScript | `5.9` | `tsc` 构建到 `dist/` |
-| 数据库 | SQLite（`better-sqlite3`） | 单文件，无需外部服务 |
+| 数据库 | SQLite（Node 内置 `node:sqlite`） | 0.2.1 起**不依赖任何原生模块**，安装不需要编译 |
+| Node.js | `node:sqlite` 需 `>=22.5` | DSH 宿主要求 `>=24.9`，天然满足；更低版本可装可选依赖 `better-sqlite3` 回退 |
 | DSH | `>=0.2.1-rc.3 <0.3.0` | 在 `package.json` 的 `engines.dsh` 中声明 |
 
 > 已在真实 DSH `0.2.1-rc.3` 宿主中完成：`dsh plugin add` 安装、`--dump-config` 出现 `novelforge-dsh` 层、headless 启动无插件加载错误。唯一未做的是「模型在会话内真实调用 `novel_*` 工具」——本机无可用 DeepSeek API Key，需用你自己的 Key 验收。详见 `docs/dsh-compatibility.md`。
@@ -95,7 +96,7 @@ pnpm run build
 dsh plugin --profile novel add "$PWD"
 ```
 
-**pnpm 用户注意原生依赖**：本包依赖 `better-sqlite3`。pnpm 10+ 默认拦截依赖构建脚本，首次安装可能报 `ERR_PNPM_IGNORED_BUILDS`，且 bundle 不会被注册。处理方式：把 `~/.dsh/profiles/<name>/pnpm-workspace.yaml` 里的占位值改成 `allowBuilds: { better-sqlite3: true }`，再重新执行 `dsh plugin --profile <name> add novelforge-dsh`。若出现 `atomic-write: timed out waiting for the writer lock`，删除该目录下的 `package.json.lock` 后重试。npm 用户不受此影响。
+**0.2.1 起不再有原生依赖**：数据库改用 Node 内置的 `node:sqlite`，安装不再触发 `prebuild-install` / `node-gyp`，也就不会再出现下面的问题。以下为历史记录，仅供排查旧版本（0.1.x）参考。
 
 **下载不到预编译二进制时会退回源码编译（Windows 常见）**：`better-sqlite3` 默认从 GitHub Release 下载预编译产物。若网络到 GitHub 不通，`prebuild-install` 会报 `No prebuilt binaries found` 并退回 `node-gyp rebuild`，在部分环境下还会因 `enable_thin_lto is not defined` 编译失败。解决方式是指定镜像，任选其一：
 
