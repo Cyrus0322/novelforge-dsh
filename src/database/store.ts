@@ -11,6 +11,7 @@ import {
   events,
   foreshadowing,
   ingestBatches,
+  knowledgeFacts,
   outlines,
   plotThreads,
   projects,
@@ -44,6 +45,19 @@ export type PlotThread = typeof plotThreads.$inferSelect
 export type Scene = typeof scenes.$inferSelect
 export type CharacterState = typeof characterStates.$inferSelect
 export type IngestBatch = typeof ingestBatches.$inferSelect
+export type KnowledgeFact = typeof knowledgeFacts.$inferSelect
+
+export interface KnowerEntry {
+  entityId: string
+  state: 'knows' | 'suspects' | 'misbelieves' | 'unaware'
+  sinceChapterId?: string | null
+  notes?: string
+}
+
+export interface KnowledgeView extends KnowledgeFact {
+  knowers: Array<KnowerEntry & { name: string }>
+  chapterNo: number | null
+}
 
 export interface RelationView extends Relation {
   sourceName: string
@@ -80,6 +94,7 @@ export interface ProjectOverview {
     threads: number
     scenes: number
     ingestBatches: number
+    overdueForeshadowing: number
   }
   currentChapter: Chapter | null
   openIssues: Array<ReviewIssue & { chapterId: string; chapterNo: number; chapterTitle: string }>
@@ -609,6 +624,7 @@ export class NovelStore {
         plantChapterId: payload.plantChapterId ?? proposal.chapterId,
         payoffChapterId: payload.payoffChapterId ?? null, status: payload.status === 'cancelled' ? 'abandoned' : 'open',
         kind: payload.kind ?? '', importance: payload.importance ?? 3, notes: payload.notes ?? '',
+        deadlineChapterId: null,
         version: 1, createdAt: timestamp, updatedAt: timestamp,
       }
       this.db.insert(foreshadowing).values(row).run()
@@ -873,6 +889,10 @@ ${row.description}`
     status?: string | undefined
     plantChapterId?: string | null | undefined
     payoffChapterId?: string | null | undefined
+    kind?: string | undefined
+    importance?: number | undefined
+    notes?: string | undefined
+    deadlineChapterId?: number | null | undefined
   }, expectedVersion?: number): Foreshadowing {
     const current = this.db.select().from(foreshadowing).where(eq(foreshadowing.id, foreshadowingId)).get()
     if (!current) throw new NovelForgeError('NOT_FOUND', `伏笔不存在：${foreshadowingId}`)
@@ -885,6 +905,10 @@ ${row.description}`
       status: patch.status ?? current.status,
       plantChapterId: patch.plantChapterId === undefined ? current.plantChapterId : patch.plantChapterId,
       payoffChapterId: patch.payoffChapterId === undefined ? current.payoffChapterId : patch.payoffChapterId,
+      kind: patch.kind ?? current.kind,
+      importance: patch.importance ?? current.importance,
+      notes: patch.notes === undefined ? current.notes : patch.notes,
+      deadlineChapterId: patch.deadlineChapterId === undefined ? current.deadlineChapterId : patch.deadlineChapterId,
       version: current.version + 1,
       updatedAt: now(),
     }
@@ -952,6 +976,7 @@ ${row.description}`
         threads: this.listPlotThreads(projectId).length,
         scenes: this.db.select({ count: sql<number>`count(*)` }).from(scenes).where(eq(scenes.projectId, projectId)).get()?.count ?? 0,
         ingestBatches: this.listIngestBatches(projectId).length,
+        overdueForeshadowing: this.listOverdueForeshadowing(projectId).length,
       },
       currentChapter,
       openIssues,
@@ -1046,6 +1071,7 @@ ${row.description}`
       description: input.description?.trim() ?? '', plantChapterId: input.plantChapterId ?? null,
       payoffChapterId: input.payoffChapterId ?? null, status: input.status ?? 'open',
       kind: input.kind ?? '', importance: input.importance ?? 3, notes: input.notes ?? '',
+      deadlineChapterId: null,
       version: 1, createdAt: timestamp, updatedAt: timestamp,
     }
     this.db.insert(foreshadowing).values(row).run()
@@ -1457,6 +1483,138 @@ ${row.description}`)
     })
     this.audit(batch.projectId, 'ingest.apply', batchId, undefined, { applied: applied.length, failed: failed.length })
     return { applied, failed }
+  }
+
+
+  // ── 知情矩阵 ──────────────────────────────────────────
+  listKnowledge(projectId: string): KnowledgeView[] {
+    const rows = this.db.select().from(knowledgeFacts).where(eq(knowledgeFacts.projectId, projectId))
+      .orderBy(asc(knowledgeFacts.publicLevel), desc(knowledgeFacts.updatedAt)).all()
+    const entities = this.listEntities(projectId)
+    const nameById = new Map(entities.map(entity => [entity.id, entity.name]))
+    const chapters = this.listChapters(projectId)
+    const chapterNo = new Map(chapters.map(chapter => [chapter.id, chapter.chapterNo]))
+    return rows.map(row => ({
+      ...row,
+      knowers: (parseJson<KnowerEntry[]>(row.knowersJson, [])).map(entry => ({
+        ...entry,
+        name: nameById.get(entry.entityId) ?? entry.entityId,
+      })),
+      chapterNo: row.chapterId ? (chapterNo.get(row.chapterId) ?? null) : null,
+    }))
+  }
+
+  createKnowledge(input: {
+    projectId: string
+    proposition: string
+    truth?: string | undefined
+    publicLevel?: string | undefined
+    chapterId?: string | null | undefined
+    knowers?: KnowerEntry[] | undefined
+    notes?: string | undefined
+  }): KnowledgeFact {
+    this.getProject(input.projectId)
+    const timestamp = now()
+    const row: KnowledgeFact = {
+      id: id('knowledge'), projectId: input.projectId,
+      proposition: requireNonEmpty(input.proposition, 'proposition'),
+      truth: input.truth ?? 'true', publicLevel: input.publicLevel ?? 'secret',
+      chapterId: input.chapterId ?? null, knowersJson: JSON.stringify(input.knowers ?? []),
+      notes: input.notes?.trim() ?? '', version: 1, createdAt: timestamp, updatedAt: timestamp,
+    }
+    this.db.insert(knowledgeFacts).values(row).run()
+    this.index(row.id, row.projectId, 'knowledge', row.id, row.truth, `${row.proposition}\n${row.notes}`)
+    this.audit(row.projectId, 'knowledge.create', row.id, undefined, row)
+    return row
+  }
+
+  updateKnowledge(factId: string, patch: {
+    proposition?: string | undefined
+    truth?: string | undefined
+    publicLevel?: string | undefined
+    chapterId?: string | null | undefined
+    knowers?: KnowerEntry[] | undefined
+    notes?: string | undefined
+  }, expectedVersion?: number): KnowledgeFact {
+    const current = this.db.select().from(knowledgeFacts).where(eq(knowledgeFacts.id, factId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `知情事实不存在：${factId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `知情事实版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      proposition: patch.proposition === undefined ? current.proposition : requireNonEmpty(patch.proposition, 'proposition'),
+      truth: patch.truth ?? current.truth,
+      publicLevel: patch.publicLevel ?? current.publicLevel,
+      chapterId: patch.chapterId === undefined ? current.chapterId : patch.chapterId,
+      knowersJson: patch.knowers === undefined ? current.knowersJson : JSON.stringify(patch.knowers),
+      notes: patch.notes === undefined ? current.notes : patch.notes,
+      version: current.version + 1, updatedAt: now(),
+    }
+    this.db.update(knowledgeFacts).set(next).where(and(eq(knowledgeFacts.id, factId), eq(knowledgeFacts.version, current.version))).run()
+    this.index(factId, current.projectId, 'knowledge', factId, next.truth, `${next.proposition}\n${next.notes}`)
+    this.audit(current.projectId, 'knowledge.update', factId, current, next)
+    return this.db.select().from(knowledgeFacts).where(eq(knowledgeFacts.id, factId)).get() as KnowledgeFact
+  }
+
+  deleteKnowledge(factId: string): { ok: true } {
+    const current = this.db.select().from(knowledgeFacts).where(eq(knowledgeFacts.id, factId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `知情事实不存在：${factId}`)
+    this.db.delete(knowledgeFacts).where(eq(knowledgeFacts.id, factId)).run()
+    this.unindex(factId)
+    this.audit(current.projectId, 'knowledge.delete', factId, current, undefined)
+    return { ok: true }
+  }
+
+  /** 某个角色当前知道/怀疑/误信/不知道哪些事——写作时防止「开天眼」。 */
+  listKnowledgeForEntity(entityId: string): KnowledgeView[] {
+    const entity = this.getEntity(entityId)
+    return this.listKnowledge(entity.projectId).filter(view =>
+      view.knowers.some(entry => entry.entityId === entityId))
+  }
+
+  // ── 伏笔逾期 ──────────────────────────────────────────
+  /** 已到（或超过）截止章但仍未回收的伏笔。 */
+  listOverdueForeshadowing(projectId: string): Array<Foreshadowing & { deadlineChapterId: number; progressChapterNo: number }> {
+    const chapters = this.listChapters(projectId)
+    const finalized = chapters.filter(chapter => chapter.status === 'finalized')
+    const progress = finalized.length
+      ? Math.max(...finalized.map(chapter => chapter.chapterNo))
+      : (chapters.length ? Math.min(...chapters.map(chapter => chapter.chapterNo)) - 1 : 0)
+    return this.listForeshadowing(projectId)
+      .filter(item => (item.status === 'open' || item.status === 'reinforced')
+        && item.deadlineChapterId !== null && item.deadlineChapterId > 0
+        && item.deadlineChapterId <= progress)
+      .map(item => ({ ...item, deadlineChapterId: item.deadlineChapterId as number, progressChapterNo: progress }))
+  }
+
+  updateForeshadowingDeadline(foreshadowingId: string, deadlineChapterId: number | null, expectedVersion?: number): Foreshadowing {
+    const current = this.db.select().from(foreshadowing).where(eq(foreshadowing.id, foreshadowingId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `伏笔不存在：${foreshadowingId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `伏笔版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    this.db.update(foreshadowing)
+      .set({ deadlineChapterId, version: current.version + 1, updatedAt: now() })
+      .where(and(eq(foreshadowing.id, foreshadowingId), eq(foreshadowing.version, current.version))).run()
+    this.audit(current.projectId, 'foreshadowing.deadline', foreshadowingId, current, { deadlineChapterId })
+    return this.db.select().from(foreshadowing).where(eq(foreshadowing.id, foreshadowingId)).get() as Foreshadowing
+  }
+
+  // ── 删除关系 / 剧情线 ─────────────────────────────────
+  deleteRelation(relationId: string): { ok: true } {
+    const current = this.db.select().from(relations).where(eq(relations.id, relationId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `关系不存在：${relationId}`)
+    this.db.delete(relations).where(eq(relations.id, relationId)).run()
+    this.audit(current.projectId, 'relation.delete', relationId, current, undefined)
+    return { ok: true }
+  }
+
+  deletePlotThread(threadId: string): { ok: true } {
+    const current = this.db.select().from(plotThreads).where(eq(plotThreads.id, threadId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `剧情线不存在：${threadId}`)
+    this.db.delete(plotThreads).where(eq(plotThreads.id, threadId)).run()
+    this.audit(current.projectId, 'thread.delete', threadId, current, undefined)
+    return { ok: true }
   }
 
 }

@@ -4,7 +4,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import * as schema from './schema.js'
-import { MIGRATION_1, MIGRATION_2 } from './migrations.js'
+import { MIGRATION_1, MIGRATION_2, MIGRATION_3 } from './migrations.js'
 import { openSqlite } from './sqlite.js'
 import type { SqliteDatabase } from './sqlite.js'
 
@@ -24,7 +24,7 @@ export function openDatabase(path: string): DatabaseHandle {
   sqlite.pragma('busy_timeout = 5000')
   if (resolved !== ':memory:') sqlite.pragma('journal_mode = WAL')
   const version = sqlite.pragma('user_version', { simple: true }) as number
-  const LATEST_SCHEMA = 2
+  const LATEST_SCHEMA = 3
   if (version > LATEST_SCHEMA) {
     sqlite.close()
     throw new Error(`数据库版本 ${version} 高于本插件支持的版本 ${LATEST_SCHEMA}，请升级 NovelForge。`)
@@ -40,6 +40,12 @@ export function openDatabase(path: string): DatabaseHandle {
     sqlite.transaction(() => {
       sqlite.exec(MIGRATION_2)
       sqlite.pragma('user_version = 2')
+    })()
+  }
+  if (version < 3) {
+    sqlite.transaction(() => {
+      sqlite.exec(MIGRATION_3)
+      sqlite.pragma('user_version = 3')
     })()
   }
   // 本地化的 drizzle 同步驱动（src/database/drizzle/）只按结构化契约使用句柄

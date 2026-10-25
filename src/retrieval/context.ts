@@ -175,6 +175,25 @@ export class ContextBuilder {
       })
     }
 
+    // 知情矩阵：谁已经知道、谁还在猜、谁被蒙在鼓里——误会与信息差的地基。
+    const knowledge = this.store.listKnowledge(project.id)
+      .filter(fact => fact.knowers.length > 0)
+    if (knowledge.length) {
+      const stateText: Record<string, string> = { knows: '知道', suspects: '怀疑', misbelieves: '误信', unaware: '不知道' }
+      sections.push({
+        name: '知情矩阵（谁知道什么）',
+        priority: 2,
+        text: knowledge.slice(0, 40).map(fact => {
+          const knowers = fact.knowers
+            .map(entry => `${entry.name}=${stateText[entry.state] ?? entry.state}`)
+            .join('、')
+          const truth = fact.truth === 'false' ? '（对外是假消息）' : fact.truth === 'partial' ? '（部分属实）' : ''
+          return `- 「${fact.proposition}」${truth} 公开度：${fact.publicLevel}｜${knowers} [来源:${fact.id}]`
+        }).join('\n'),
+        sources: knowledge.slice(0, 40).map(fact => ({ id: fact.id, type: 'knowledge', status: fact.truth })),
+      })
+    }
+
     // 本章场景/节拍：写作时最直接的落地指令。
     const sceneRows = this.store.listScenes(chapter.id)
     if (sceneRows.length) {

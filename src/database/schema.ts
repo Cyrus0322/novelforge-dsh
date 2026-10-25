@@ -121,6 +121,7 @@ export const foreshadowing = sqliteTable('foreshadowing', {
   kind: text('kind').notNull().default(''),
   importance: integer('importance').notNull().default(3),
   notes: text('notes').notNull().default(''),
+  deadlineChapterId: integer('deadline_chapter_id'),
   version: integer('version').notNull().default(1),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -272,3 +273,17 @@ export const ingestBatches = sqliteTable('ingest_batches', {
   createdAt: text('created_at').notNull(),
   appliedAt: text('applied_at'),
 }, table => [index('ingest_batches_project_idx').on(table.projectId, table.status)])
+
+export const knowledgeFacts = sqliteTable('knowledge_facts', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  proposition: text('proposition').notNull(),
+  truth: text('truth').notNull().default('true'),
+  publicLevel: text('public_level').notNull().default('secret'),
+  chapterId: text('chapter_id'),
+  knowersJson: text('knowers_json').notNull().default('[]'),
+  notes: text('notes').notNull().default(''),
+  version: integer('version').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, table => [index('knowledge_project_idx').on(table.projectId)])

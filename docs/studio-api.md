@@ -605,3 +605,43 @@ SearchResult  { recordId, recordType, sourceId, status, snippet }
 - `stats.conflictList` 是模型报告的素材内部矛盾（类型 + 描述 + 证据），仅提示，不自动修改任何资料。
 - 应用顺序固定为 实体 → 剧情线 → 伏笔 → 事件 → **关系**，保证同批新建的人物能被关系解析到。
 - 无模型凭据时 `POST /ingest` 返回 `400 CONFIG_ERROR`（与其它 AI 端点一致）。
+
+---
+
+## 10. 0.7.0 新增端点（知情矩阵 / 伏笔逾期 / 删除）
+
+> 端点数从 62 增至 **73**。
+
+### 10.1 知情矩阵
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/projects/:projectId/knowledge` | `KnowledgeView[]`（含 `knowers[].name`、`chapterNo`） |
+| POST | `/api/projects/:projectId/knowledge` | body：`proposition`（必填）、`truth?`(true/partial/false)、`publicLevel?`(secret/circle/organization/public)、`chapterId?`、`knowers?(Array<{entityId,state,sinceChapterId?,notes?}>)`、`notes?` |
+| PATCH | `/api/knowledge/:factId` | 同上字段 + `expectedVersion?` |
+| DELETE | `/api/knowledge/:factId` | 返回 `{ ok: true }` |
+| GET | `/api/entities/:entityId/knowledge` | 该人物相关的知情事实 |
+
+`knowers[].state` 枚举：`knows`（知道）/ `suspects`（怀疑）/ `misbelieves`（误信）/ `unaware`（不知道）。
+
+### 10.2 伏笔截止与逾期
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| PATCH | `/api/foreshadowing/:foreshadowingId` | 新增可写 `deadlineChapterId`（章号，传 `null` 清除） |
+| GET | `/api/projects/:projectId/foreshadowing-overdue` | 已过截止章仍未回收的伏笔（带 `progressChapterNo`） |
+
+`progressChapterNo` = 已定稿章节的最大章号；一章都没定稿时取「最小章号 − 1」。
+`GET /api/projects/:projectId` 的 `counts.overdueForeshadowing` 同步暴露该数量。
+
+### 10.3 删除
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| DELETE | `/api/relations/:relationId` | 删除关系，写审计 |
+| DELETE | `/api/threads/:threadId` | 删除剧情线，写审计 |
+
+### 10.4 导出
+
+`GET /api/projects/:projectId/export.md` 返回**纯文本 Markdown**（不是 JSON 信封），只含已定稿章节；
+面板顶栏「导出」会把它下载为 `<书名>.md`。

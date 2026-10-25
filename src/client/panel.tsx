@@ -34,7 +34,8 @@ interface Project {
 }
 interface OverviewCounts {
   chapters: number; finalizedChapters: number; entities: number; foreshadowingOpen: number
-  threads: number; relations: number; scenes: number; openIssues: number; pendingProposals: number; ingestBatches: number
+  threads: number; relations: number; scenes: number; openIssues: number; pendingProposals: number
+  ingestBatches: number; overdueForeshadowing: number
 }
 interface ProjectOverview { project: Project; counts: OverviewCounts }
 interface ChapterSummary {
@@ -48,7 +49,11 @@ interface Entity {
   importance: number; aliasesJson: string; version: number
 }
 interface StoryEvent { id: string; summary: string; eventTime: string; status: string }
-interface Foreshadowing { id: string; name: string; description: string; status: string; kind: string }
+interface Foreshadowing {
+  id: string; name: string; description: string; status: string; kind: string
+  importance: number; notes: string; deadlineChapterId: number | null; version: number
+  plantChapterId: string | null; payoffChapterId: string | null
+}
 interface PlotThread { id: string; name: string; kind: string; goal: string; summary: string; status: string; version: number }
 interface Relation { id: string; sourceName: string; targetName: string; kind: string; tension: string; status: string }
 interface Scene {
@@ -58,8 +63,19 @@ interface Scene {
 interface SearchHit { recordId: string; recordType: string; status: string; snippet: string }
 interface ChapterDetail {
   chapter: { id: string; chapterNo: number; title: string; status: string; summary: string }
+  outline: { id: string; title: string; content: string; version: number } | null
   latestRevision: { id: string; revisionNo: number; content: string; status: string; kind: string } | null
   latestReview: { run: { status: string }; issues: Array<{ id: string; severity: string; issue: string; resolutionStatus?: string }> } | null
+}
+
+interface KnowerEntry { entityId: string; state: 'knows' | 'suspects' | 'misbelieves' | 'unaware'; sinceChapterId?: string | null; notes?: string }
+interface KnowledgeFact {
+  id: string; proposition: string; truth: string; publicLevel: string
+  chapterId: string | null; chapterNo: number | null; notes: string; version: number; updatedAt: string
+  knowers: Array<KnowerEntry & { name: string }>
+}
+interface EntityState {
+  id: string; characterId: string; chapterId: string | null; summary: string; stateJson: string; createdAt: string
 }
 interface Proposal {
   id: string; targetType: string; operation: string; status: string; payloadJson: string
@@ -74,7 +90,7 @@ interface IngestOutcome {
   proposals: Proposal[]
 }
 
-type Tab = 'chapters' | 'entities' | 'threads' | 'relations' | 'timeline' | 'foreshadowing' | 'ingest' | 'proposals'
+type Tab = 'chapters' | 'entities' | 'threads' | 'relations' | 'timeline' | 'foreshadowing' | 'knowledge' | 'ingest' | 'proposals'
 
 // ── 数据访问 ─────────────────────────────────────────────────
 let cachedBase: string | null = null
@@ -129,6 +145,10 @@ const STATUS_TEXT: Record<string, string> = {
   finalized: '已定稿', open: '未回收', reinforced: '已强化', payoff: '已回收', abandoned: '已废弃',
   confirmed: '已确认', draft: '草稿', cancelled: '已取消', active: '进行中', paused: '已暂停',
   resolved: '已解决', pending: '待审批', applied: '已应用', rejected: '已驳回', ready: '待应用',
+  advancing: '推进中', closed: '已结束',
+  knows: '知道', suspects: '怀疑', misbelieves: '误信', unaware: '不知道',
+  true: '属实', false: '假消息', partial: '部分属实',
+  secret: '秘密', circle: '小圈', organization: '组织', public: '公开',
   partially_applied: '部分应用', applied_batch: '已应用', failed: '失败', analyzing: '分析中', applying: '应用中',
 }
 const KIND_TEXT: Record<string, string> = {
@@ -234,6 +254,7 @@ export function NovelForgePanel() {
   const [foreshadowing, setForeshadowing] = useState<Foreshadowing[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [batches, setBatches] = useState<IngestBatch[]>([])
+  const [knowledge, setKnowledge] = useState<KnowledgeFact[]>([])
   const [hits, setHits] = useState<SearchHit[]>([])
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<Tab>('chapters')
@@ -256,6 +277,14 @@ export function NovelForgePanel() {
   const [threadDraft, setThreadDraft] = useState<Partial<PlotThread> | null>(null)
   const [relationDraft, setRelationDraft] = useState<{ sourceId: string; targetId: string; kind: string; tension: string } | null>(null)
   const [sceneDraft, setSceneDraft] = useState<Partial<Scene> | null>(null)
+  const [knowledgeDraft, setKnowledgeDraft] = useState<Partial<KnowledgeFact> | null>(null)
+  const [eventDraft, setEventDraft] = useState<{ id?: string; summary: string; eventTime: string; status: string; version?: number } | null>(null)
+  const [shadowDraft, setShadowDraft] = useState<Partial<Foreshadowing> | null>(null)
+  const [outlineDraft, setOutlineDraft] = useState<{ id: string; summary: string; goal: string; conflict: string; hook: string; raw: string; version: number } | null>(null)
+  const [entityDetail, setEntityDetail] = useState<Entity | null>(null)
+  const [entityStates, setEntityStates] = useState<EntityState[]>([])
+  const [stateDraft, setStateDraft] = useState<{ chapterId: string; summary: string; stateJson: string } | null>(null)
+  const [knowerDraft, setKnowerDraft] = useState<Record<string, 'knows' | 'suspects' | 'misbelieves' | 'unaware' | 'none'>>({})
 
   // 素材导入
   const [material, setMaterial] = useState('')
@@ -277,7 +306,7 @@ export function NovelForgePanel() {
     setError(null)
     try {
       const encoded = encodeURIComponent(id)
-      const [detail, chapterList, entityList, threadList, relationList, eventList, shadowList, proposalList, batchList] = await Promise.all([
+      const [detail, chapterList, entityList, threadList, relationList, eventList, shadowList, proposalList, batchList, knowledgeList] = await Promise.all([
         apiGet<ProjectOverview>(`/api/projects/${encoded}`),
         apiGet<ChapterSummary[]>(`/api/projects/${encoded}/chapter-summaries`),
         apiGet<Entity[]>(`/api/projects/${encoded}/entities`),
@@ -287,6 +316,7 @@ export function NovelForgePanel() {
         apiGet<Foreshadowing[]>(`/api/projects/${encoded}/foreshadowing`),
         apiGet<Proposal[]>(`/api/projects/${encoded}/proposals?status=pending`),
         apiGet<IngestBatch[]>(`/api/projects/${encoded}/ingest-batches`),
+        apiGet<KnowledgeFact[]>(`/api/projects/${encoded}/knowledge`),
       ])
       if (!mounted.current) return
       setOverview(detail)
@@ -298,6 +328,7 @@ export function NovelForgePanel() {
       setForeshadowing(shadowList)
       setProposals(proposalList)
       setBatches(batchList)
+      setKnowledge(knowledgeList)
     } catch (cause) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -353,6 +384,15 @@ export function NovelForgePanel() {
 
   const project = useMemo(() => projects.find(item => item.id === projectId) ?? null, [projects, projectId])
   const counts = overview?.counts
+  const progressChapter = useMemo(() => {
+    const finalized = chapters.filter(item => item.chapter.status === 'finalized')
+    if (finalized.length) return Math.max(...finalized.map(item => item.chapter.chapterNo))
+    const all = chapters.map(item => item.chapter.chapterNo)
+    return all.length ? Math.min(...all) - 1 : 0
+  }, [chapters])
+  const isOverdue = (item: Foreshadowing): boolean =>
+    (item.status === 'open' || item.status === 'reinforced') && item.deadlineChapterId !== null
+    && item.deadlineChapterId > 0 && item.deadlineChapterId <= progressChapter
   const characters = useMemo(() => entities.filter(item => item.kind === 'character'), [entities])
   const others = useMemo(() => entities.filter(item => item.kind !== 'character'), [entities])
 
@@ -498,6 +538,134 @@ export function NovelForgePanel() {
     await act('proposal', () => apiCall('POST', `/api/proposals/${proposalId}/reject`), '已驳回')
   }
 
+  // ── 知情矩阵 ──
+  const saveKnowledge = async (): Promise<void> => {
+    if (!knowledgeDraft || !projectId) return
+    const knowers = Object.entries(knowerDraft)
+      .filter(([, state]) => state !== 'none')
+      .map(([entityId, state]) => ({ entityId, state }))
+    const payload = {
+      proposition: knowledgeDraft.proposition ?? '',
+      truth: knowledgeDraft.truth ?? 'true',
+      publicLevel: knowledgeDraft.publicLevel ?? 'secret',
+      chapterId: knowledgeDraft.chapterId ?? null,
+      notes: knowledgeDraft.notes ?? '',
+      knowers,
+    }
+    const ok = knowledgeDraft.id
+      ? await act('knowledge', () => apiCall('PATCH', `/api/knowledge/${knowledgeDraft.id}`, { ...payload, expectedVersion: knowledgeDraft.version }), '已保存知情事实')
+      : await act('knowledge', () => apiCall('POST', `/api/projects/${projectId}/knowledge`, payload), '已记录知情事实')
+    if (ok) { setKnowledgeDraft(null); setKnowerDraft({}) }
+  }
+  const deleteKnowledge = async (factId: string): Promise<void> => {
+    if (!window.confirm('删除这条知情事实？')) return
+    await act('knowledge-delete', () => apiCall('DELETE', `/api/knowledge/${factId}`), '已删除')
+  }
+
+  // ── 事件 / 伏笔 ──
+  const saveEvent = async (): Promise<void> => {
+    if (!eventDraft || !projectId) return
+    const payload = { summary: eventDraft.summary, eventTime: eventDraft.eventTime, status: eventDraft.status }
+    const ok = eventDraft.id
+      ? await act('event', () => apiCall('PATCH', `/api/events/${eventDraft.id}`, payload), '已保存事件')
+      : await act('event', () => apiCall('POST', `/api/projects/${projectId}/events`, payload), '已创建事件')
+    if (ok) setEventDraft(null)
+  }
+  const saveShadow = async (): Promise<void> => {
+    if (!shadowDraft || !projectId) return
+    const payload = {
+      name: shadowDraft.name ?? '',
+      description: shadowDraft.description ?? '',
+      kind: shadowDraft.kind ?? '',
+      importance: shadowDraft.importance ?? 3,
+      notes: shadowDraft.notes ?? '',
+      status: shadowDraft.status ?? 'open',
+      deadlineChapterId: shadowDraft.deadlineChapterId ?? null,
+    }
+    const ok = shadowDraft.id
+      ? await act('shadow', () => apiCall('PATCH', `/api/foreshadowing/${shadowDraft.id}`, { ...payload, expectedVersion: shadowDraft.version }), '已保存伏笔')
+      : await act('shadow', () => apiCall('POST', `/api/projects/${projectId}/foreshadowing`, payload), '已埋设伏笔')
+    if (ok) setShadowDraft(null)
+  }
+
+  // ── 章纲 ──
+  const saveOutline = async (): Promise<void> => {
+    if (!outlineDraft) return
+    const content = JSON.stringify({ summary: outlineDraft.summary, goal: outlineDraft.goal, conflict: outlineDraft.conflict, hook: outlineDraft.hook })
+    const ok = await act('outline', () => apiCall('PATCH', `/api/outlines/${outlineDraft.id}`, { content, expectedVersion: outlineDraft.version }), '已保存章纲')
+    if (ok) { setOutlineDraft(null); await reloadReader() }
+  }
+  const openOutline = (): void => {
+    if (!reader?.outline) return
+    let parsed: { summary?: string; goal?: string; conflict?: string; hook?: string } = {}
+    try { parsed = JSON.parse(reader.outline.content) as typeof parsed } catch { parsed = {} }
+    setOutlineDraft({
+      id: reader.outline.id,
+      version: reader.outline.version,
+      summary: parsed.summary ?? '',
+      goal: parsed.goal ?? '',
+      conflict: parsed.conflict ?? '',
+      hook: parsed.hook ?? '',
+      raw: reader.outline.content,
+    })
+  }
+
+  // ── 人物状态快照 ──
+  const openEntityDetail = async (entity: Entity): Promise<void> => {
+    setEntityDetail(entity)
+    setStateDraft({ chapterId: '', summary: '', stateJson: '{}' })
+    try {
+      setEntityStates(await apiGet<EntityState[]>(`/api/entities/${encodeURIComponent(entity.id)}/states`))
+    } catch {
+      setEntityStates([])
+    }
+  }
+  const saveEntityState = async (): Promise<void> => {
+    if (!entityDetail || !stateDraft) return
+    let parsed: Record<string, unknown> = {}
+    try { parsed = JSON.parse(stateDraft.stateJson || '{}') as Record<string, unknown> } catch { setError('状态 JSON 格式不对。'); return }
+    const ok = await act('entity-state', () => apiCall('POST', `/api/entities/${entityDetail.id}/states`, {
+      ...(stateDraft.chapterId ? { chapterId: stateDraft.chapterId } : {}),
+      summary: stateDraft.summary,
+      state: parsed,
+    }), '已记录状态快照')
+    if (ok) {
+      setEntityStates(await apiGet<EntityState[]>(`/api/entities/${encodeURIComponent(entityDetail.id)}/states`).catch(() => []))
+      setStateDraft({ chapterId: '', summary: '', stateJson: '{}' })
+    }
+  }
+
+  // ── 删除关系 / 剧情线 ──
+  const deleteRelation = async (relation: Relation): Promise<void> => {
+    if (!window.confirm(`删除关系「${relation.sourceName} —${relation.kind}→ ${relation.targetName}」？`)) return
+    await act('relation-delete', () => apiCall('DELETE', `/api/relations/${relation.id}`), '已删除关系')
+  }
+  const deleteThread = async (thread: PlotThread): Promise<void> => {
+    if (!window.confirm(`删除剧情线「${thread.name}」？`)) return
+    await act('thread-delete', () => apiCall('DELETE', `/api/threads/${thread.id}`), '已删除剧情线')
+  }
+
+  // ── 导出 ──
+  const exportMarkdown = async (): Promise<void> => {
+    if (!projectId) return
+    try {
+      const base = await discoverBase()
+      const response = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/export.md`)
+      if (!response.ok) throw new Error(`导出失败（HTTP ${response.status}）`)
+      const markdown = await response.text()
+      const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${project?.title ?? 'novel'}.md`
+      anchor.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      flash(`已导出 ${markdown.length} 字符（仅含已定稿章节）`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
   const retry = (): void => { cachedBase = null; setLoading(true); setAttempt(value => value + 1) }
 
   // ── 章节阅读 / 编辑视图 ──
@@ -521,6 +689,7 @@ export function NovelForgePanel() {
           ) : (
             <>
               <button type="button" style={btnStyle} onClick={() => { setEditing(true); setDraft(reader.latestRevision?.content ?? '') }}>编辑正文</button>
+              {reader.outline && <button type="button" style={btnStyle} onClick={openOutline}>编辑章纲</button>}
               {aiReady && (
                 <>
                   <button type="button" style={btnStyle} disabled={busy !== null} onClick={() => { void aiDraft() }} title="读取上下文生成本章草稿">
@@ -614,6 +783,7 @@ export function NovelForgePanel() {
     ['relations', '关系', relations.length],
     ['timeline', '时间线', events.length],
     ['foreshadowing', '伏笔', foreshadowing.length],
+    ['knowledge', '认知', knowledge.length],
     ['ingest', '导入', batches.length],
     ['proposals', '审批', proposals.length],
   ]
@@ -634,6 +804,7 @@ export function NovelForgePanel() {
         <div style={{ flex: 1 }} />
         {project && <span style={{ color: C.muted }}>{project.genre}{project.pov ? ` · ${project.pov}` : ''}</span>}
         <button type="button" style={btnStyle} onClick={() => { cachedBase = null; void refresh() }}>刷新</button>
+        <button type="button" style={btnStyle} onClick={() => { void exportMarkdown() }} title="导出仅含已定稿章节的 Markdown">导出</button>
       </div>
 
       {notice && <div style={{ margin: '8px 16px 0', padding: '7px 11px', border: `1px solid rgba(108,192,139,0.4)`, background: 'rgba(108,192,139,0.1)', color: C.ok, borderRadius: 8, fontSize: 12 }}>{notice}</div>}
@@ -653,6 +824,8 @@ export function NovelForgePanel() {
           <StatCard label="场景" value={counts.scenes} />
           <StatCard label="未回收伏笔" value={counts.foreshadowingOpen} tone={counts.foreshadowingOpen ? C.warn : undefined} />
           <StatCard label="待审批" value={counts.pendingProposals} tone={counts.pendingProposals ? C.warn : undefined} />
+          <StatCard label="逾期伏笔" value={counts.overdueForeshadowing} tone={counts.overdueForeshadowing ? C.danger : undefined}
+            hint={counts.overdueForeshadowing ? '已过截止章' : undefined} />
         </div>
       )}
 
@@ -716,6 +889,7 @@ export function NovelForgePanel() {
                       {entity.role && <Pill color={C.accent}>{entity.role}</Pill>}
                       <StatusPill status={entity.status} />
                       <div style={{ flex: 1 }} />
+                      <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => { void openEntityDetail(entity) }}>详情</button>
                       <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => setEntityDraft(entity)}>编辑</button>
                     </div>
                     {entity.goal && <div style={{ color: C.dim, marginTop: 4, fontSize: 12 }}>目标：{entity.goal}</div>}
@@ -738,6 +912,7 @@ export function NovelForgePanel() {
                     <StatusPill status={thread.status} />
                     <div style={{ flex: 1 }} />
                     <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => setThreadDraft(thread)}>编辑</button>
+                    <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11, color: C.danger }} onClick={() => { void deleteThread(thread) }}>删除</button>
                   </div>
                   {thread.goal && <div style={{ color: C.dim, fontSize: 12, marginTop: 3 }}>目标：{thread.goal}</div>}
                 </Row>
@@ -755,6 +930,8 @@ export function NovelForgePanel() {
                     <strong style={{ fontWeight: 500 }}>{relation.sourceName}</strong>
                     <span style={{ color: C.muted }}>—{relation.kind}→</span>
                     <strong style={{ fontWeight: 500 }}>{relation.targetName}</strong>
+                    <div style={{ flex: 1 }} />
+                    <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11, color: C.danger }} onClick={() => { void deleteRelation(relation) }}>删除</button>
                   </div>
                   {relation.tension && <div style={{ color: C.dim, fontSize: 12, marginTop: 3 }}>张力：{relation.tension}</div>}
                 </Row>
@@ -764,13 +941,16 @@ export function NovelForgePanel() {
 
           {tab === 'timeline' && (
             <div style={{ padding: '6px 10px' }}>
-              {events.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有事件记录。</div>}
+              <button type="button" style={{ ...btnStyle, marginBottom: 8 }} onClick={() => setEventDraft({ summary: '', eventTime: '', status: 'confirmed' })}>+ 新建事件</button>
+              {events.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有事件记录。别忘了：planned 只是计划，confirmed 才算既成事实。</div>}
               {[...events].sort((a, b) => a.eventTime.localeCompare(b.eventTime)).map(event => (
                 <Row key={event.id}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span style={{ color: C.muted, fontSize: 11, minWidth: 78 }}>{event.eventTime || '未定时间'}</span>
                     <StatusPill status={event.status} />
                     <span style={{ color: event.status === 'confirmed' ? C.text : C.dim }}>{event.summary}</span>
+                    <div style={{ flex: 1 }} />
+                    <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => setEventDraft({ id: event.id, summary: event.summary, eventTime: event.eventTime, status: event.status })}>编辑</button>
                   </div>
                 </Row>
               ))}
@@ -779,16 +959,68 @@ export function NovelForgePanel() {
 
           {tab === 'foreshadowing' && (
             <div style={{ padding: '6px 10px' }}>
-              {foreshadowing.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有伏笔记录。</div>}
-              {foreshadowing.map(item => (
-                <Row key={item.id}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <strong style={{ fontWeight: 500 }}>{item.name}</strong>
-                    <StatusPill status={item.status} />
-                    {item.kind && <Pill>{item.kind}</Pill>}
+              <button type="button" style={{ ...btnStyle, marginBottom: 8 }} onClick={() => setShadowDraft({ status: 'open', importance: 3, kind: '' })}>+ 埋设伏笔</button>
+              {foreshadowing.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有伏笔记录。建议每条都填「最晚回收章」，逾期会在总览标红。</div>}
+              {foreshadowing.map(item => {
+                const overdue = isOverdue(item)
+                return (
+                  <Row key={item.id}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <strong style={{ fontWeight: 500 }}>{item.name}</strong>
+                      <StatusPill status={item.status} />
+                      {item.kind && <Pill>{item.kind}</Pill>}
+                      {item.deadlineChapterId ? (
+                        <Pill color={overdue ? C.danger : C.muted}>
+                          {overdue ? `逾期：应第 ${item.deadlineChapterId} 章前回收` : `最晚第 ${item.deadlineChapterId} 章`}
+                        </Pill>
+                      ) : <Pill color={C.muted}>未设截止章</Pill>}
+                      <div style={{ flex: 1 }} />
+                      <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => setShadowDraft(item)}>编辑</button>
+                    </div>
+                    <div style={{ color: overdue ? C.danger : C.dim, fontSize: 12, marginTop: 2 }}>{item.description || '（无描述）'}</div>
+                  </Row>
+                )
+              })}
+            </div>
+          )}
+
+          {tab === 'knowledge' && (
+            <div style={{ padding: '6px 10px' }}>
+              <button type="button" style={{ ...btnStyle, marginBottom: 8 }} onClick={() => {
+                setKnowledgeDraft({ truth: 'true', publicLevel: 'secret', notes: '', proposition: '' })
+                setKnowerDraft({})
+              }}>+ 记录一条「谁知道什么」</button>
+              {knowledge.length === 0 && (
+                <div style={{ padding: 16, color: C.muted, lineHeight: 1.8 }}>
+                  还没有知情事实。误会、装傻、信息差全靠它：写清「这件事的真相」+「谁已经知道 / 谁还在猜 / 谁被蒙在鼓里」。
+                </div>
+              )}
+              {knowledge.map(fact => (
+                <div key={fact.id} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: '8px 10px', marginBottom: 8, background: C.bg2 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 500 }}>{fact.proposition}</span>
+                    <Pill color={fact.truth === 'true' ? C.ok : fact.truth === 'partial' ? C.warn : C.danger}>{text(fact.truth)}</Pill>
+                    <Pill color={C.info}>{text(fact.publicLevel)}</Pill>
+                    {fact.chapterNo !== null && <Pill color={C.muted}>第 {fact.chapterNo} 章</Pill>}
+                    <div style={{ flex: 1 }} />
+                    <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11 }} onClick={() => {
+                      setKnowledgeDraft(fact)
+                      const draft: Record<string, 'knows' | 'suspects' | 'misbelieves' | 'unaware' | 'none'> = {}
+                      for (const knower of fact.knowers) draft[knower.entityId] = knower.state
+                      setKnowerDraft(draft)
+                    }}>编辑</button>
+                    <button type="button" style={{ ...btnStyle, padding: '1px 7px', fontSize: 11, color: C.danger }} onClick={() => { void deleteKnowledge(fact.id) }}>删除</button>
                   </div>
-                  <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>{item.description || '（无描述）'}</div>
-                </Row>
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
+                    {fact.knowers.length === 0 && <span style={{ color: C.muted, fontSize: 11.5 }}>还没有记录谁知道</span>}
+                    {fact.knowers.map(knower => (
+                      <Pill key={knower.entityId} color={knower.state === 'knows' ? C.ok : knower.state === 'unaware' ? C.muted : C.warn}>
+                        {knower.name}：{text(knower.state)}
+                      </Pill>
+                    ))}
+                  </div>
+                  {fact.notes && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 4 }}>{fact.notes}</div>}
+                </div>
               ))}
             </div>
           )}
@@ -898,6 +1130,171 @@ export function NovelForgePanel() {
       )}
 
       {/* ── 弹窗 ── */}
+      {knowledgeDraft && (
+        <Modal wide title={knowledgeDraft.id ? '编辑知情事实' : '记录知情事实'} onClose={() => { setKnowledgeDraft(null); setKnowerDraft({}) }}
+          footer={<><button type="button" style={btnStyle} onClick={() => { setKnowledgeDraft(null); setKnowerDraft({}) }}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveKnowledge() }}>保存</button></>}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <Field label="事实 / 秘密（一句话）"><input style={inputStyle} value={knowledgeDraft.proposition ?? ''} onChange={event => setKnowledgeDraft({ ...knowledgeDraft, proposition: event.target.value })} placeholder="例如：林渊每次回响会折寿" /></Field>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <Field label="真相">
+                <select style={inputStyle} value={knowledgeDraft.truth ?? 'true'} onChange={event => setKnowledgeDraft({ ...knowledgeDraft, truth: event.target.value })}>
+                  <option value="true">属实</option><option value="partial">部分属实</option><option value="false">假消息</option>
+                </select>
+              </Field>
+              <Field label="公开度">
+                <select style={inputStyle} value={knowledgeDraft.publicLevel ?? 'secret'} onChange={event => setKnowledgeDraft({ ...knowledgeDraft, publicLevel: event.target.value })}>
+                  <option value="secret">秘密</option><option value="circle">小圈</option><option value="organization">组织</option><option value="public">公开</option>
+                </select>
+              </Field>
+              <Field label="首次涉及章节">
+                <select style={inputStyle} value={knowledgeDraft.chapterId ?? ''} onChange={event => setKnowledgeDraft({ ...knowledgeDraft, chapterId: event.target.value || null })}>
+                  <option value="">不指定</option>
+                  {chapters.map(item => <option key={item.chapter.id} value={item.chapter.id}>第 {item.chapter.chapterNo} 章 {item.chapter.title}</option>)}
+                </select>
+              </Field>
+            </div>
+            <Field label="备注"><textarea style={{ ...inputStyle, minHeight: 60 }} value={knowledgeDraft.notes ?? ''} onChange={event => setKnowledgeDraft({ ...knowledgeDraft, notes: event.target.value })} /></Field>
+            <div>
+              <div style={{ color: C.muted, fontSize: 11, marginBottom: 6 }}>谁知道（人物 / 势力）</div>
+              <div style={{ display: 'grid', gap: 6, maxHeight: 240, overflow: 'auto', border: `1px solid ${C.line}`, borderRadius: 8, padding: 8 }}>
+                {entities.length === 0 && <div style={{ color: C.muted, fontSize: 12 }}>资料库里还没有人物，先去「资料」标签新建。</div>}
+                {entities.map(entity => (
+                  <div key={entity.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 12 }}>{entity.name}<span style={{ color: C.muted, fontSize: 11 }}> · {KIND_TEXT[entity.kind] ?? entity.kind}</span></span>
+                    <select
+                      style={{ ...inputStyle, width: 120 }}
+                      value={knowerDraft[entity.id] ?? 'none'}
+                      onChange={event => setKnowerDraft({ ...knowerDraft, [entity.id]: event.target.value as 'knows' })}
+                    >
+                      <option value="none">不涉及</option>
+                      <option value="knows">知道</option>
+                      <option value="suspects">怀疑</option>
+                      <option value="misbelieves">误信</option>
+                      <option value="unaware">不知道</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {eventDraft && (
+        <Modal title={eventDraft.id ? '编辑事件' : '新建事件'} onClose={() => setEventDraft(null)}
+          footer={<><button type="button" style={btnStyle} onClick={() => setEventDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveEvent() }}>保存</button></>}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <Field label="事件摘要"><textarea style={{ ...inputStyle, minHeight: 70 }} value={eventDraft.summary} onChange={event => setEventDraft({ ...eventDraft, summary: event.target.value })} /></Field>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <Field label="故事内时间"><input style={inputStyle} value={eventDraft.eventTime} onChange={event => setEventDraft({ ...eventDraft, eventTime: event.target.value })} placeholder="例如：第 11 天 03:40" /></Field>
+              <Field label="状态">
+                <select style={inputStyle} value={eventDraft.status} onChange={event => setEventDraft({ ...eventDraft, status: event.target.value })}>
+                  <option value="confirmed">已发生</option><option value="planned">计划中</option><option value="draft">草稿</option><option value="cancelled">已取消</option>
+                </select>
+              </Field>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {shadowDraft && (
+        <Modal title={shadowDraft.id ? '编辑伏笔' : '埋设伏笔'} onClose={() => setShadowDraft(null)}
+          footer={<><button type="button" style={btnStyle} onClick={() => setShadowDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveShadow() }}>保存</button></>}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <Field label="名称"><input style={inputStyle} value={shadowDraft.name ?? ''} onChange={event => setShadowDraft({ ...shadowDraft, name: event.target.value })} /></Field>
+            <Field label="描述"><textarea style={{ ...inputStyle, minHeight: 70 }} value={shadowDraft.description ?? ''} onChange={event => setShadowDraft({ ...shadowDraft, description: event.target.value })} /></Field>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <Field label="类型"><input style={inputStyle} value={shadowDraft.kind ?? ''} onChange={event => setShadowDraft({ ...shadowDraft, kind: event.target.value })} placeholder="道具/对话/场景" /></Field>
+              <Field label="状态">
+                <select style={inputStyle} value={shadowDraft.status ?? 'open'} onChange={event => setShadowDraft({ ...shadowDraft, status: event.target.value })}>
+                  <option value="open">未回收</option><option value="reinforced">已强化</option><option value="payoff">已回收</option><option value="abandoned">已废弃</option>
+                </select>
+              </Field>
+              <Field label="最晚回收章（章号）"><input style={inputStyle} type="number" min={1} value={shadowDraft.deadlineChapterId ?? ''} onChange={event => setShadowDraft({ ...shadowDraft, deadlineChapterId: event.target.value ? Number(event.target.value) : null })} /></Field>
+            </div>
+            <Field label="重要度 1–5"><input style={inputStyle} type="number" min={1} max={5} value={shadowDraft.importance ?? 3} onChange={event => setShadowDraft({ ...shadowDraft, importance: Number(event.target.value) })} /></Field>
+            <Field label="备注"><textarea style={{ ...inputStyle, minHeight: 60 }} value={shadowDraft.notes ?? ''} onChange={event => setShadowDraft({ ...shadowDraft, notes: event.target.value })} /></Field>
+          </div>
+        </Modal>
+      )}
+
+      {outlineDraft && (
+        <Modal title="编辑章纲（计划，不是已发生事实）" onClose={() => setOutlineDraft(null)}
+          footer={<><button type="button" style={btnStyle} onClick={() => setOutlineDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveOutline() }}>保存</button></>}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <Field label="本章摘要"><textarea style={{ ...inputStyle, minHeight: 60 }} value={outlineDraft.summary} onChange={event => setOutlineDraft({ ...outlineDraft, summary: event.target.value })} /></Field>
+            <Field label="本章目标"><input style={inputStyle} value={outlineDraft.goal} onChange={event => setOutlineDraft({ ...outlineDraft, goal: event.target.value })} /></Field>
+            <Field label="核心冲突"><input style={inputStyle} value={outlineDraft.conflict} onChange={event => setOutlineDraft({ ...outlineDraft, conflict: event.target.value })} /></Field>
+            <Field label="章末钩子"><input style={inputStyle} value={outlineDraft.hook} onChange={event => setOutlineDraft({ ...outlineDraft, hook: event.target.value })} /></Field>
+          </div>
+        </Modal>
+      )}
+
+      {entityDetail && (
+        <Modal wide title={`${entityDetail.name} 的状态与知情`} onClose={() => setEntityDetail(null)}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div>
+              <div style={{ color: C.muted, fontSize: 11, marginBottom: 6 }}>按章状态快照（{entityStates.length}）</div>
+              {entityStates.length === 0 && <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.8 }}>还没有快照。记录等级、伤势、持有物、位置，防止「重伤秒好」。</div>}
+              <div style={{ display: 'grid', gap: 6, maxHeight: 220, overflow: 'auto' }}>
+                {entityStates.map(state => (
+                  <div key={state.id} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: '6px 9px', background: C.bg }}>
+                    <div style={{ fontSize: 11.5, color: C.muted }}>{state.chapterId ? (chapters.find(item => item.chapter.id === state.chapterId)?.chapter.title ?? '未知章节') : '未指定章节'} · {shortTime(state.createdAt)}</div>
+                    <div style={{ fontSize: 12.5, marginTop: 2 }}>{state.summary || '（无摘要）'}</div>
+                    {state.stateJson !== '{}' && <pre style={{ margin: '4px 0 0', color: C.dim, fontSize: 11, whiteSpace: 'pre-wrap' }}>{state.stateJson}</pre>}
+                  </div>
+                ))}
+              </div>
+              {stateDraft && (
+                <div style={{ marginTop: 10, borderTop: `1px solid ${C.line}`, paddingTop: 10, display: 'grid', gap: 8 }}>
+                  <Field label="章节">
+                    <select style={inputStyle} value={stateDraft.chapterId} onChange={event => setStateDraft({ ...stateDraft, chapterId: event.target.value })}>
+                      <option value="">不指定</option>
+                      {chapters.map(item => <option key={item.chapter.id} value={item.chapter.id}>第 {item.chapter.chapterNo} 章 {item.chapter.title}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="状态摘要"><input style={inputStyle} value={stateDraft.summary} onChange={event => setStateDraft({ ...stateDraft, summary: event.target.value })} placeholder="例如：左臂骨裂，青铜灯冷却中" /></Field>
+                  <Field label="结构化状态（JSON，可留空）" hint='例如 {"level":"引气七层","injury":["左臂骨裂"],"items":["青铜灯"],"location":"归墟巷"}'>
+                    <textarea style={{ ...inputStyle, minHeight: 70 }} value={stateDraft.stateJson} onChange={event => setStateDraft({ ...stateDraft, stateJson: event.target.value })} />
+                  </Field>
+                  <button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveEntityState() }}>记录快照</button>
+                </div>
+              )}
+            </div>
+            <div>
+              <div style={{ color: C.muted, fontSize: 11, marginBottom: 6 }}>该角色相关的知情事实</div>
+              {knowledge.filter(fact => fact.knowers.some(knower => knower.entityId === entityDetail.id)).length === 0 && (
+                <div style={{ color: C.muted, fontSize: 12 }}>还没有记录。去「认知」标签补一条。</div>
+              )}
+              <div style={{ display: 'grid', gap: 6 }}>
+                {knowledge
+                  .filter(fact => fact.knowers.some(knower => knower.entityId === entityDetail.id))
+                  .map(fact => {
+                    const mine = fact.knowers.find(knower => knower.entityId === entityDetail.id)
+                    return (
+                      <div key={fact.id} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: '6px 9px', background: C.bg }}>
+                        <div style={{ fontSize: 12.5 }}>{fact.proposition}</div>
+                        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                          {mine ? text(mine.state) : ''} · 公开度 {text(fact.publicLevel)}
+                        </div>
+                      </div>
+                    )
+                  })}
+              </div>
+              <div style={{ color: C.muted, fontSize: 11, margin: '12px 0 6px' }}>与该角色相关的关系</div>
+              {relations.filter(relation => relation.sourceName === entityDetail.name || relation.targetName === entityDetail.name).length === 0
+                ? <div style={{ color: C.muted, fontSize: 12 }}>还没有关系记录。</div>
+                : relations.filter(relation => relation.sourceName === entityDetail.name || relation.targetName === entityDetail.name).map(relation => (
+                  <div key={relation.id} style={{ fontSize: 12, color: C.dim, marginBottom: 3 }}>
+                    {relation.sourceName} —{relation.kind}→ {relation.targetName}
+                    {relation.tension ? `（${relation.tension}）` : ''}
+                  </div>
+                ))}
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {entityDraft && (
         <Modal wide title={entityDraft.id ? `编辑：${entityDraft.name ?? ''}` : '新建人物 / 设定'} onClose={() => setEntityDraft(null)}
           footer={<><button type="button" style={btnStyle} onClick={() => setEntityDraft(null)}>取消</button><button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void saveEntity() }}>保存</button></>}>

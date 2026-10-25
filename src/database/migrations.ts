@@ -293,3 +293,28 @@ CREATE INDEX ingest_batches_project_idx ON ingest_batches(project_id, status);
 CREATE INDEX proposals_batch_idx ON change_proposals(batch_id);
 CREATE INDEX entities_project_status_idx ON entities(project_id, status);
 `
+
+/**
+ * 迁移 3：知情矩阵 + 伏笔截止章。
+ * - knowledge_facts：一条「事实/秘密」+ 谁知道、知道到什么程度（knows/suspects/misbelieves/unaware）
+ *   这是误会、装傻、信息差的地基，也是防「角色开天眼」的审查依据。
+ * - foreshadowing.deadline_chapter_id：伏笔最晚要在第几章回收，用来做逾期提醒。
+ */
+export const MIGRATION_3 = `
+ALTER TABLE foreshadowing ADD COLUMN deadline_chapter_id INTEGER;
+
+CREATE TABLE knowledge_facts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  proposition TEXT NOT NULL,
+  truth TEXT NOT NULL DEFAULT 'true',
+  public_level TEXT NOT NULL DEFAULT 'secret',
+  chapter_id TEXT,
+  knowers_json TEXT NOT NULL DEFAULT '[]',
+  notes TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX knowledge_project_idx ON knowledge_facts(project_id);
+`

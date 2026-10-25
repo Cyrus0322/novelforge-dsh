@@ -67,6 +67,28 @@ function queryNumber(query: URLSearchParams, key: string): number | undefined {
   return value
 }
 
+function knowers(source: Record<string, unknown>): Array<{ entityId: string; state: 'knows' | 'suspects' | 'misbelieves' | 'unaware'; sinceChapterId?: string | null; notes?: string }> {
+  const value = source.knowers
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new NovelForgeError('INVALID_INPUT', 'knowers 必须是数组。')
+  return value.map((item, index) => {
+    if (typeof item !== 'object' || item === null) throw new NovelForgeError('INVALID_INPUT', `knowers[${index}] 必须是对象。`)
+    const entry = item as Record<string, unknown>
+    const entityId = typeof entry.entityId === 'string' ? entry.entityId : ''
+    const state = typeof entry.state === 'string' ? entry.state : 'knows'
+    if (!entityId) throw new NovelForgeError('INVALID_INPUT', `knowers[${index}] 缺 entityId。`)
+    if (!['knows', 'suspects', 'misbelieves', 'unaware'].includes(state)) {
+      throw new NovelForgeError('INVALID_INPUT', `knowers[${index}].state 只能是 knows / suspects / misbelieves / unaware。`)
+    }
+    return {
+      entityId,
+      state: state as 'knows' | 'suspects' | 'misbelieves' | 'unaware',
+      ...(typeof entry.sinceChapterId === 'string' ? { sinceChapterId: entry.sinceChapterId } : {}),
+      ...(typeof entry.notes === 'string' ? { notes: entry.notes } : {}),
+    }
+  })
+}
+
 export function buildRoutes(deps: RouteDeps): Route[] {
   const { service, store } = deps
   const ai = (): void => {
@@ -366,6 +388,12 @@ export function buildRoutes(deps: RouteDeps): Route[] {
       status: optionalString(body, 'status'),
       plantChapterId: body.plantChapterId === undefined ? undefined : (body.plantChapterId === null ? null : String(body.plantChapterId)),
       payoffChapterId: body.payoffChapterId === undefined ? undefined : (body.payoffChapterId === null ? null : String(body.payoffChapterId)),
+      kind: optionalString(body, 'kind'),
+      importance: optionalNumber(body, 'importance'),
+      notes: optionalString(body, 'notes'),
+      deadlineChapterId: body.deadlineChapterId === undefined
+        ? undefined
+        : (body.deadlineChapterId === null ? null : Number(body.deadlineChapterId)),
     }, optionalNumber(body, 'expectedVersion'))
   })
 
@@ -510,6 +538,44 @@ export function buildRoutes(deps: RouteDeps): Route[] {
   })
 
   add('DELETE', '/api/scenes/:sceneId', context => store.deleteScene(context.params.sceneId as string))
+
+  // ── 知情矩阵 ──────────────────────────────────────────
+  add('GET', '/api/projects/:projectId/knowledge', context => store.listKnowledge(context.params.projectId as string))
+
+  add('POST', '/api/projects/:projectId/knowledge', async context => {
+    const body = await context.body()
+    return store.createKnowledge({
+      projectId: context.params.projectId as string,
+      proposition: requireString(body, 'proposition', '事实/秘密'),
+      truth: optionalString(body, 'truth'),
+      publicLevel: optionalString(body, 'publicLevel'),
+      chapterId: optionalString(body, 'chapterId'),
+      knowers: knowers(body),
+      notes: optionalString(body, 'notes'),
+    })
+  })
+
+  add('PATCH', '/api/knowledge/:factId', async context => {
+    const body = await context.body()
+    return store.updateKnowledge(context.params.factId as string, {
+      proposition: optionalString(body, 'proposition'),
+      truth: optionalString(body, 'truth'),
+      publicLevel: optionalString(body, 'publicLevel'),
+      chapterId: body.chapterId === undefined ? undefined : (body.chapterId === null ? null : String(body.chapterId)),
+      knowers: body.knowers === undefined ? undefined : knowers(body),
+      notes: optionalString(body, 'notes'),
+    }, optionalNumber(body, 'expectedVersion'))
+  })
+
+  add('DELETE', '/api/knowledge/:factId', context => store.deleteKnowledge(context.params.factId as string))
+
+  add('GET', '/api/entities/:entityId/knowledge', context => store.listKnowledgeForEntity(context.params.entityId as string))
+
+  add('GET', '/api/projects/:projectId/foreshadowing-overdue', context => store.listOverdueForeshadowing(context.params.projectId as string))
+
+  add('DELETE', '/api/relations/:relationId', context => store.deleteRelation(context.params.relationId as string))
+
+  add('DELETE', '/api/threads/:threadId', context => store.deletePlotThread(context.params.threadId as string))
 
   // ── 素材导入 ──────────────────────────────────────────
   add('POST', '/api/projects/:projectId/ingest', async context => {
