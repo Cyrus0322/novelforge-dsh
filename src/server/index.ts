@@ -23,6 +23,8 @@ export interface StudioServerOptions {
   service?: NovelService
   hasApiKey?: () => boolean
   autoPort?: boolean
+  /** 传入的 service 由调用方持有（DSH 插件场景）：关闭本服务时不关闭它。 */
+  ownsService?: boolean
 }
 
 export interface StudioServerHandle {
@@ -69,10 +71,12 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     ?? process.env.NOVELFORGE_STUDIO_DIR
     ?? resolve(PACKAGE_ROOT, 'apps/studio/dist')
   const service = options.service ?? createNovelService(options.config)
+  const ownsService = options.ownsService ?? options.service === undefined
+  const releaseService = (): void => { if (ownsService) service.close() }
   const host = options.host ?? process.env.NOVELFORGE_STUDIO_HOST ?? '127.0.0.1'
   const token = options.token ?? process.env.NOVELFORGE_STUDIO_TOKEN ?? ''
   if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1' && !token) {
-    service.close()
+    releaseService()
     throw new NovelForgeError('CONFIG_ERROR', '绑定到非本机地址时必须设置 NOVELFORGE_STUDIO_TOKEN，否则拒绝启动。')
   }
   const hasApiKey = options.hasApiKey ?? ((): boolean => {
@@ -118,7 +122,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
   }
   if (!port) {
-    service.close()
+    releaseService()
     throw new NovelForgeError('CONFIG_ERROR', `工作台端口被占用且自动重试失败：${lastError instanceof Error ? lastError.message : String(lastError)}`)
   }
 
@@ -133,7 +137,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         server.close(() => resolvePromise())
         server.closeAllConnections?.()
       })
-      service.close()
+      releaseService()
     },
   }
 }

@@ -96,3 +96,69 @@ pnpm run studio         # 127.0.0.1:4319，自动开浏览器
 ```
 
 安全边界（已在代码中实现并有测试覆盖）：默认只监听 `127.0.0.1`；绑定其他地址必须提供令牌；仅放行本机 Origin 的写请求；静态目录做路径穿越校验；畸形 URL 编码返回 400 而不是抛异常。
+
+## 0.4.0 新增：DSH Web 内嵌面板（客户端插件）契约核验
+
+以下每一项都来自本机 **DSH 0.2.1-rc.3 桌面版**（`D:\DeepSeek Haressesourcespp.asar`）的真实源码，路径可复核；随后在独立安装的 `@deepseek-ai/dsh@0.2.1-rc.3` 上做了端到端验证。
+
+### 1. 包声明
+
+```jsonc
+// package.json
+"exports": { "./client": { "default": "./lib/client.js" } },
+"dsh": {
+  "bundle": { "patch": "./cordis.patch.yml" },   // 宿主侧（已有）
+  "client": {
+    "platform": "web",                            // 只有 web 平台会进浏览器启动图
+    "inject": ["@deepseek-ai/dsh-client-ui-layout"] // 需要先加载的客户端插件包
+  }
+}
+```
+
+依据：`dsh/node_modules/@deepseek-ai/dsh-client-ui-jobs/package.json`、`dsh-client-ui-open-in-app/package.json`；
+平台过滤见 `dsh-client-modules/lib/index.js`（`platform !== "web"`）。
+
+### 2. bundle 形态
+
+```js
+window.__ModuleLoader__.load({
+  id: "<包名>",
+  factory: (require) => { /* ... */ return module.exports }
+})
+```
+
+依据：任一 `lib/client.js` 首行。factory 的 `require` 来自宿主基座，React / `react/jsx-runtime` / `react-dom` 属于基座模块，不需要在 `dsh.client.external` 里声明。
+本插件的 bundle 由 `scripts/build-client.mjs` 用 esbuild 产出（`format: cjs`、`react*` external），只 `require("react")` 与 `require("react/jsx-runtime")` 两项，`tests/client-bundle.test.ts` 会断言这一点。
+
+### 3. 面板注册
+
+```js
+// 模块导出 Cordis 客户端插件形态
+export const name = 'novelforge-client'
+export const inject = ['slots', 'layout']      // 客户端服务名
+export function apply(ctx) {
+  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'novelforge' }, Panel))
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist', id: 'novelforge', order: 30, label: () => '小说',
+  }, Icon))
+}
+```
+
+依据：`dsh-client-ui-plugin-manager/lib/client.js` 的 `ctx.slots.inject("main", …)` + `ctx.slots.register({ name: "main", key: PANEL_ID, … }, PluginManagerPage)` 与 `sidebar.panellist` 注册块；
+`ctx.layout.selectPanel(id)` 见同文件；插槽语义见 `dsh-client-ui-layout/README.zh.md`（全局面板占 root 作用域的 `main` keyed slot，`conversation` 保留）。
+
+### 4. 端到端验证（独立安装的 0.2.1-rc.3，独立 DSH_HOME）
+
+| 步骤 | 命令/动作 | 结果 |
+| --- | --- | --- |
+| 安装到 profile | `dsh plugin --profile <p> add <repo>` | 成功，profile 的 `dsh.profile.bundles` 追加 `novelforge-dsh` |
+| 层组合 | `dsh --profile <p> --dump-config` | 出现 `# == novelforge-dsh` 层与该行 |
+| 浏览器启动图 | `GET /?token=…` 后读 `__DSH_BOOT__` | `entries` 中出现 `novelforge-dsh/client.js`（批量 combo URL 与单行 URL 各一份） |
+| bundle 下发 | `GET /plugins/??novelforge-dsh/client.js&rev=…` | `200 text/javascript`，内容为本插件 wrapper |
+| 宿主侧自动启动 | `GET http://127.0.0.1:4319/api/health` | `200`，`version`/`databasePath` 正常 |
+| 契约单测 | `pnpm test`（`tests/client-bundle.test.ts`） | 6 项通过：仅依赖基座模块、导出形态、两个插槽注册、缺少 slots 时只告警、`#novelforge` 跳转、面板可静态渲染 |
+
+### 5. 仍未做的验证
+
+- **没有真实浏览器点击验收**：本机无浏览器自动化，故只验证到「宿主把 bundle 纳入启动图并成功下发 + 宿主侧服务可用」。面板的视觉与交互需要你在 DSH GUI 里点一次侧边栏「小说」确认。
+- 若未来 DSH 调整 `slots.register` 的字段（`key` / `id` / `label` / `children`），内嵌面板会失效；代码里每处注册都包了 try/catch 并只告警，不会拖垮 GUI。`tests/client-bundle.test.ts` 固定了当前契约，升级宿主时先跑它。

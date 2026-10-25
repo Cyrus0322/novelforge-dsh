@@ -132,13 +132,15 @@ function match(route: Route, method: string, pathname: string): Record<string, s
   return params
 }
 
-/** 只允许本机来源直接跨域访问，避免任何公网页面把本地小说库拖走。 */
-function isLocalOrigin(origin: string | undefined, port: number): boolean {
+/**
+ * 只允许本机来源直接跨域访问，避免任何公网页面把本地小说库拖走。
+ * 端口不参与判断：DSH Web GUI 的端口随会话变化，而回环地址上的页面本就与本地服务同机。
+ */
+function isLocalOrigin(origin: string | undefined): boolean {
   if (!origin) return true
   try {
     const url = new URL(origin)
-    const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
-    return localHosts.has(url.hostname) && (url.port === String(port) || url.port === '' || url.port === '5273')
+    return ['127.0.0.1', 'localhost', '[::1]', '::1', '0.0.0.0'].includes(url.hostname)
   } catch {
     return false
   }
@@ -161,7 +163,7 @@ export function createDispatcher(options: DispatcherOptions) {
     const origin = request.headers.origin
     const method = (request.method ?? 'GET').toUpperCase()
 
-    if (origin && isLocalOrigin(origin, localPort)) {
+    if (origin && isLocalOrigin(origin)) {
       response.setHeader('access-control-allow-origin', origin)
       response.setHeader('vary', 'origin')
       response.setHeader('access-control-allow-headers', 'content-type, x-novelforge-token')
@@ -181,7 +183,7 @@ export function createDispatcher(options: DispatcherOptions) {
           return
         }
       }
-      if (method !== 'GET' && origin && !isLocalOrigin(origin, localPort)) {
+      if (method !== 'GET' && origin && !isLocalOrigin(origin)) {
         failure(response, 403, 'FORBIDDEN', '只允许本机页面写入小说资料。')
         return
       }

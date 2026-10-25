@@ -4,11 +4,13 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { InferArgs, ParameterSchemaSpec, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { NovelForgeError } from '../shared/errors.js'
-import { DEFAULT_CONFIG, validateRuntimeConfig } from '../shared/config.js'
+import { DEFAULT_CONFIG, resolveApiKey, validateRuntimeConfig } from '../shared/config.js'
 import type { RuntimeConfig } from '../shared/config.js'
 import { toJson } from '../shared/json.js'
 import { createNovelService } from '../workflow/novel-service.js'
 import { createHostLlmClient } from '../llm/dsh-llm.js'
+import { startStudioServer } from '../server/index.js'
+import type { StudioServerHandle } from '../server/index.js'
 import type { NovelService } from '../workflow/novel-service.js'
 import { z } from 'zod'
 
@@ -44,6 +46,8 @@ export const Config: Schema<Config> = Schema.object({
   maxContextTokens: Schema.number().default(DEFAULT_CONFIG.maxContextTokens),
   recentChapters: Schema.number().default(DEFAULT_CONFIG.recentChapters),
   maxRevisionRounds: Schema.number().default(DEFAULT_CONFIG.maxRevisionRounds),
+  studioAutoStart: Schema.boolean().default(DEFAULT_CONFIG.studioAutoStart),
+  studioPort: Schema.number().default(DEFAULT_CONFIG.studioPort),
 })
 
 interface ToolOptions<S extends ParameterSchemaSpec> {
@@ -92,6 +96,63 @@ export function apply(ctx: Context, config: Config = DEFAULT_CONFIG): void {
   const service = createNovelService(runtimeConfig, createHostLlmClient(ctx, runtimeConfig))
   ctx.effect(() => () => service.close())
   registerTools(ctx, service, config)
+
+  // 本地工作台服务：给内嵌面板与浏览器界面提供同一份数据的 REST 入口。
+  // 复用插件的同一个 store（ownsService: false），端口被占用时自动顺延。
+  if (runtimeConfig.studioAutoStart) {
+    let handle: StudioServerHandle | null = null
+    let disposed = false
+    void startStudioServer({
+      config: runtimeConfig,
+      port: runtimeConfig.studioPort,
+      service,
+      ownsService: false,
+      hasApiKey: () => hasAi(ctx, runtimeConfig),
+    }).then(started => {
+      handle = started
+      if (disposed) {
+        void started.close()
+        return
+      }
+      log(ctx, 'info', `NovelForge 工作台已就绪：${started.url}（数据库：${runtimeConfig.databasePath}）`)
+    }).catch((error: unknown) => {
+      log(ctx, 'warn', `NovelForge 工作台未能启动：${error instanceof Error ? error.message : String(error)}。内嵌面板会显示连接失败提示，DSH 工具不受影响。`)
+    })
+    ctx.effect(() => () => {
+      disposed = true
+      void handle?.close()
+    })
+  }
+}
+
+/** AI 是否可用：宿主模型服务优先，其次插件直连 Key。仅用于工作台状态展示与按钮置灰。 */
+function hasAi(ctx: Context, config: RuntimeConfig): boolean {
+  try {
+    if ((ctx as unknown as { get?: (name: string) => unknown }).get?.('llm')) return true
+  } catch {
+    // 宿主没有 llm 服务：继续看直连 Key。
+  }
+  try {
+    resolveApiKey(config)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function log(ctx: Context, level: 'info' | 'warn', message: string): void {
+  try {
+    const logger = (ctx as unknown as { logger?: (name: string) => Record<string, (msg: string) => void> }).logger?.('novelforge')
+    const write = logger?.[level]
+    if (typeof write === 'function') {
+      write.call(logger, message)
+      return
+    }
+  } catch {
+    // 宿主 logger 形态不同：退回 console，绝不因为日志失败影响插件。
+  }
+  const fallback = level === 'warn' ? console.warn : console.info
+  fallback.call(console, `[novelforge] ${message}`)
 }
 
 export function registerTools(ctx: Context, service: NovelService, config: RuntimeConfig = DEFAULT_CONFIG): void {

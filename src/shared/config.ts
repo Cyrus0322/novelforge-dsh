@@ -19,6 +19,10 @@ export interface RuntimeConfig {
   maxContextTokens: number
   recentChapters: number
   maxRevisionRounds: number
+  /** DSH 插件加载时自动起本地工作台服务，供内嵌面板与浏览器使用。 */
+  studioAutoStart: boolean
+  /** 工作台服务监听端口；被占用时自动向后顺延。 */
+  studioPort: number
 }
 
 export const DEFAULT_CONFIG: RuntimeConfig = {
@@ -37,6 +41,8 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   maxContextTokens: 64_000,
   recentChapters: 3,
   maxRevisionRounds: 3,
+  studioAutoStart: true,
+  studioPort: 4319,
 }
 
 const environmentSchema = z.object({
@@ -53,6 +59,8 @@ const environmentSchema = z.object({
   NOVELFORGE_MAX_CONTEXT_TOKENS: z.coerce.number().int().min(8192).optional(),
   NOVELFORGE_RECENT_CHAPTERS: z.coerce.number().int().min(0).max(10).optional(),
   NOVELFORGE_MAX_REVISION_ROUNDS: z.coerce.number().int().min(0).max(10).optional(),
+  NOVELFORGE_STUDIO_AUTOSTART: z.string().optional(),
+  NOVELFORGE_STUDIO_PORT: z.coerce.number().int().min(1024).max(65535).optional(),
 })
 
 export function validateRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
@@ -67,6 +75,9 @@ export function validateRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
   }
   if (config.maxRetries < 0 || config.maxRevisionRounds < 0) {
     throw new NovelForgeError('CONFIG_ERROR', '重试次数和修订轮次不能为负数。')
+  }
+  if (!Number.isInteger(config.studioPort) || config.studioPort < 1024 || config.studioPort > 65535) {
+    throw new NovelForgeError('CONFIG_ERROR', 'studioPort 必须是 1024 到 65535 之间的整数。')
   }
   return { ...config, baseURL: config.baseURL.replace(/\/+$/, '') }
 }
@@ -92,6 +103,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): RuntimeConf
     maxContextTokens: value.NOVELFORGE_MAX_CONTEXT_TOKENS ?? DEFAULT_CONFIG.maxContextTokens,
     recentChapters: value.NOVELFORGE_RECENT_CHAPTERS ?? DEFAULT_CONFIG.recentChapters,
     maxRevisionRounds: value.NOVELFORGE_MAX_REVISION_ROUNDS ?? DEFAULT_CONFIG.maxRevisionRounds,
+    studioAutoStart: value.NOVELFORGE_STUDIO_AUTOSTART === undefined
+      ? DEFAULT_CONFIG.studioAutoStart
+      : ['1', 'true', 'yes', 'on'].includes(value.NOVELFORGE_STUDIO_AUTOSTART.toLowerCase()),
+    studioPort: value.NOVELFORGE_STUDIO_PORT ?? DEFAULT_CONFIG.studioPort,
   })
 }
 

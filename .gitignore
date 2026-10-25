@@ -9,3 +9,5 @@ coverage/
 .workbuddy/
 .smoke/
 .pnpm-install.log
+# DSH 客户端插件 bundle（由 pnpm run build:client 生成）
+lib/

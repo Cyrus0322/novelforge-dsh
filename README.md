@@ -2,9 +2,9 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.3.0`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.4.0`。
 
-0.3.0 起附带**可视化工作台 Studio**：本地网页版小说管理界面（项目总览 / 大纲 / 章节编辑器 / 人物与世界观 / 时间线 / 伏笔 / 审查报告 / 版本比较 / 待审批变更 / 工作流 / 审计与导出），不用 AI 也能管理和写作。
+0.3.0 起提供两层可视化界面：**DSH 内嵌面板**（在 Web GUI 侧边栏点「小说」即可查正文、人物、时间线、伏笔、全局搜索）与**完整本地工作台 Studio**（12 个页面，可编辑、可定稿、可导出）。两层共用同一份 SQLite 数据，不用 AI 也能管理与写作。
 GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>
 
 ---
@@ -19,7 +19,7 @@ GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.np
 | TypeScript | `5.9` | `tsc` 构建到 `dist/` |
 | 数据库 | SQLite（Node 内置 `node:sqlite`） | 0.2.1 起**不依赖任何原生模块**，安装不需要编译 |
 | Node.js | `node:sqlite` 需 `>=22.5` | DSH 宿主要求 `>=24.9`，天然满足；更低版本可装可选依赖 `better-sqlite3` 回退 |
-| DSH | `>=0.2.1-rc.3 <0.3.0` | 在 `package.json` 的 `engines.dsh` 中声明 |
+| DSH | `>=0.2.1-rc.3 <0.3.0` | 在 `package.json` 的 `engines.dsh` 中声明；内嵌面板契约按 0.2.1-rc.3 实机核验 |
 
 > 已在真实 DSH `0.2.1-rc.3` 宿主中完成：`dsh plugin add` 安装、`--dump-config` 出现 `novelforge-dsh` 层、headless 启动无插件加载错误。唯一未做的是「模型在会话内真实调用 `novel_*` 工具」——本机无可用 DeepSeek API Key，需用你自己的 Key 验收。详见 `docs/dsh-compatibility.md`。
 
@@ -40,13 +40,16 @@ novelforge-dsh/
 │   ├── dsh-plugin/index.ts   # 【入口】Cordis 插件：name / inject / Config / apply
 │   ├── cli/index.ts          # 【入口】本地命令行（含 studio 子命令）
 │   ├── server/               # 【入口】工作台服务：REST API、静态托管、令牌与来源校验
+│   ├── client/               # 【入口】DSH Web 内嵌面板（React 客户端插件，esbuild 打包）
 │   ├── domain/schemas.ts     # 蓝图、大纲、章节计划、审查结果的 Zod Schema
 │   ├── database/             # SQLite 建表、迁移、Repository（事务、审计、全文索引）
 │   ├── retrieval/context.ts  # 动态上下文包与 token 预算裁剪
 │   ├── workflow/             # novel-service.ts（编排）+ prompts.ts（提示词模板）
 │   ├── llm/                  # DSH 宿主模型适配、DeepSeek 直连回退、结构化输出
 │   └── shared/               # 配置、错误码、ID、JSON 工具
-├── apps/studio/              # 可视化工作台（React 19 + Vite 8 + TypeScript，无 UI 库依赖）
+├── scripts/build-client.mjs  # 把 src/client 打成 lib/client.js（__ModuleLoader__ 包裹）
+├── lib/client.js             # 客户端插件 bundle（构建产物，随 npm 包发布）
+├── apps/studio/              # 完整工作台（React 19 + Vite 8 + TypeScript，无 UI 库依赖）
 │   ├── index.html
 │   ├── vite.config.ts        # base './'，dev 时 /api 代理到 127.0.0.1:4319
 │   └── src/
@@ -166,7 +169,33 @@ pnpm run studio            # 终端 A：后端 + 已构建页面
 pnpm run studio:dev        # 终端 B：Vite dev server（127.0.0.1:5273）
 ```
 
-### 3.4 独立 CLI（不依赖 DSH，便于调试）
+### 3.4 DSH 内嵌面板（Web GUI 侧边栏「小说」）
+
+插件同时是一个 **DSH Web 客户端插件**：`package.json` 里声明 `dsh.client`（`platform: "web"`），
+`exports["./client"]` 指向 `lib/client.js`（由 `scripts/build-client.mjs` 用 esbuild 生成，
+只把 `react` / `react/jsx-runtime` 留给宿主基座）。加载后：
+
+1. 宿主侧插件在启动时自动拉起本机 REST 服务（默认 `127.0.0.1:4319`，端口占用自动顺延），
+   与 DSH 工具共用同一个 `NovelStore` 连接；
+2. 客户端面板注册进 `main`（keyed slot）与 `sidebar.panellist`，点侧边栏 **「小说」** 打开，
+   也可以访问 `http://127.0.0.1:<DSH 端口>/#novelforge` 直接跳转。
+
+面板能做什么（**只读**，写入仍走 DSH 工具或完整工作台）：
+
+| 区域 | 内容 |
+| --- | --- |
+| 顶栏 | 项目下拉、全局搜索（章节/人物/事件/伏笔，250ms 防抖）、当前项目体裁与统计、「完整工作台」按钮 |
+| 章节 | 章节列表（状态、字数、版本号），点开即读全文（衬线排版、可滚动） |
+| 资料 | 人物 / 世界规则 / 地点 / 势力 / 物品 / 能力 卡片，含 `confirmed` 等状态徽标 |
+| 时间线 | 事件按 `eventTime` 排序，`planned` 与 `confirmed` 用不同颜色区分（计划不是事实） |
+| 伏笔 | 未回收 / 已强化 / 已回收 / 已废弃状态一览 |
+
+为什么是只读：内嵌面板拿不到 `ctx.approval` 的一次性审批链路，而资料变更与定稿必须经作者显式批准。
+所以面板负责「查」，改动去完整工作台（那里有二次确认 + 审计日志）或在对话里让模型调用 `novel_*` 工具。
+
+关闭它：`studioAutoStart: false`（或环境变量 `NOVELFORGE_STUDIO_AUTOSTART=false`）。
+
+### 3.5 独立 CLI（不依赖 DSH，便于调试）
 
 ```sh
 pnpm install
@@ -310,7 +339,8 @@ pnpm install
 pnpm run typecheck   # 后端 tsc --noEmit + 工作台 tsc --noEmit
 pnpm run test        # vitest run（含真实 HTTP 服务测试）
 pnpm run build       # 后端输出到 dist/
-pnpm run build:all   # 后端 + 工作台前端（发布前用）
+pnpm run build:all   # 后端 + 客户端面板 bundle + 工作台前端（发布前用）
+pnpm run build:client # 只重建 DSH 内嵌面板 lib/client.js
 pnpm run studio      # 启动工作台（需要先 studio:build）
 ```
 
@@ -323,7 +353,7 @@ pnpm run studio      # 启动工作台（需要先 studio:build）
 ## 10. 方案中未定义、按默认实现的细节
 
 1. **DSH 宿主版本**：官方要求 Node.js ≥24.9.0，本机 22.22.2，故 CLI 与测试独立验证，DSH 内验收列为环境前置条件。
-2. **可视化工作台**：方案给了两条路线（DSH 内嵌 Slot / 独立本地网页）。本版按方案授权走**独立本地 Web UI**：`apps/studio` + `src/server`，通过受控 REST 连接领域服务，**不宣称已嵌入 DSH**。内嵌 DSH 客户端面板仍需要核验当前版本的 Client Modules 与 Slot 注册方式，属于后续阶段。
+2. **可视化工作台（两条路线都已落地）**：① **DSH 内嵌面板** —— 客户端插件经 `dsh.client` + `window.__ModuleLoader__` 加载，注册进 `main` 与 `sidebar.panellist` 插槽（契约逐项核验见 `docs/dsh-compatibility.md`），只读；② **完整本地工作台** —— `apps/studio` + `src/server`，12 个页面、可写、带二次确认与审计。两者共用同一份数据与服务端领域层，浏览器都不直接接触 SQLite。
 3. **多包结构**：方案建议 `packages/domain|database|retrieval|workflow|llm|dsh-plugin` 多包。为降低工程开销并保持既有构建链路稳定，本版为「根包 + `apps/studio`」的 pnpm workspace：逻辑边界仍按目录保留，`apps/studio` 是独立包。
 4. **检索方案**：先用 SQLite FTS5（trigram）并保留 LIKE 子串回退，未引入向量数据库；中文短词（2–3 字）依赖回退保证可召回。
 5. **事实来源字段**：在 `entities`、`events` 等记录上使用 `sourceChapterId` / `sourceRevisionId`，未额外建立独立来源表。
