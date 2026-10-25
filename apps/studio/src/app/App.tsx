@@ -8,6 +8,8 @@ import { OutlinePage } from '../pages/OutlinePage.tsx'
 import { EntitiesPage } from '../pages/EntitiesPage.tsx'
 import { TimelinePage } from '../pages/TimelinePage.tsx'
 import { ForeshadowingPage } from '../pages/ForeshadowingPage.tsx'
+import { KnowledgePage } from '../pages/KnowledgePage.tsx'
+import { GraphPage } from '../pages/GraphPage.tsx'
 import { IngestPage } from '../pages/IngestPage.tsx'
 import { ChaptersPage } from '../pages/ChaptersPage.tsx'
 import { ChapterWorkspacePage } from '../pages/ChapterWorkspacePage.tsx'
@@ -34,6 +36,8 @@ const NAV_SECTIONS: Array<{
     title: '资料库',
     items: [
       { key: 'entities', label: '人物与世界观', glyph: '☰' },
+      { key: 'graph', label: '关系图谱', glyph: '◎' },
+      { key: 'knowledge', label: '知情矩阵', glyph: '◍' },
       { key: 'timeline', label: '事件时间线', glyph: '⏱' },
       { key: 'foreshadowing', label: '伏笔', glyph: '⟡' },
     ],
@@ -207,6 +211,8 @@ function RouteView({ projectId, section, chapterId, navigate, projects, projects
   if (section === 'ingest') return <IngestPage {...props} />
   if (section === 'outline') return <OutlinePage {...props} />
   if (section === 'entities') return <EntitiesPage {...props} />
+  if (section === 'graph') return <GraphPage {...props} />
+  if (section === 'knowledge') return <KnowledgePage {...props} />
   if (section === 'timeline') return <TimelinePage {...props} />
   if (section === 'foreshadowing') return <ForeshadowingPage {...props} />
   if (section === 'chapters' && chapterId) return <ChapterWorkspacePage {...props} chapterId={chapterId} />

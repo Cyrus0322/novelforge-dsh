@@ -215,9 +215,26 @@ export class ContextBuilder {
       sections.push({ name: '较早章节摘要', priority: 5, text: data.text, sources: data.sources })
     }
     if (openForeshadowing.length) {
+      // 伏笔提醒：把「已逾期」和「本章附近到期」的挑出来，明确写回收压力。
+      const withDeadline = openForeshadowing.map(row => ({
+        row,
+        deadline: row.deadlineChapterId,
+        overdue: row.deadlineChapterId !== null && row.deadlineChapterId > 0 && row.deadlineChapterId <= chapter.chapterNo,
+        dueSoon: row.deadlineChapterId !== null && row.deadlineChapterId > chapter.chapterNo
+          && row.deadlineChapterId <= chapter.chapterNo + 3,
+      }))
+      const overdue = withDeadline.filter(item => item.overdue)
+      const dueSoon = withDeadline.filter(item => item.dueSoon)
+      const headline = overdue.length || dueSoon.length
+        ? `\n【提醒】${overdue.length ? `已逾期 ${overdue.length} 条（应在本章或更早回收）` : ''}${overdue.length && dueSoon.length ? '；' : ''}${dueSoon.length ? `未来 3 章内到期 ${dueSoon.length} 条` : ''}。写作时优先给这些伏笔安排回收或强化。`
+        : ''
       sections.push({
-        name: '未回收伏笔', priority: 4,
-        text: openForeshadowing.map(row => `- ${row.name}：${row.description} [来源:${row.id}]`).join('\n'),
+        name: '未回收伏笔（含回收期限）', priority: 1,
+        text: headline + '\n' + withDeadline.map(({ row, deadline, overdue, dueSoon }) => {
+          const tag = overdue ? '【逾期】' : dueSoon ? '【即将到期】' : ''
+          const limit = deadline ? `（最晚第 ${deadline} 章回收）` : ''
+          return `- ${tag}${row.name}${limit}：${row.description} [来源:${row.id}]`
+        }).join('\n'),
         sources: openForeshadowing.map(row => ({ id: row.id, type: 'foreshadowing', status: row.status })),
       })
     }

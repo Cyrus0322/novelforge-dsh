@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
 import type { NovelStore } from '../database/store.js'
 import type { NovelService } from '../workflow/novel-service.js'
+import { eq } from 'drizzle-orm'
 import { NovelForgeError } from '../shared/errors.js'
+import { events as eventsTable } from '../database/schema.js'
 import { parseJson } from '../shared/json.js'
 import type { Route } from './http.js'
 import { sendText } from './http.js'
@@ -121,6 +123,12 @@ export function buildRoutes(deps: RouteDeps): Route[] {
       genre: requireString(body, 'genre', '题材'),
       premise: optionalString(body, 'premise'),
       styleGuide: optionalString(body, 'styleGuide'),
+      pov: optionalString(body, 'pov'),
+      tense: optionalString(body, 'tense'),
+      chapterWordsMin: optionalNumber(body, 'chapterWordsMin'),
+      chapterWordsMax: optionalNumber(body, 'chapterWordsMax'),
+      targetChapters: optionalNumber(body, 'targetChapters'),
+      themes: stringArray(body, 'themes'),
     })
   })
 
@@ -399,6 +407,16 @@ export function buildRoutes(deps: RouteDeps): Route[] {
         : (body.deadlineChapterId === null ? null : Number(body.deadlineChapterId)),
     }, optionalNumber(body, 'expectedVersion'))
   })
+
+  // ── 影响分析 ──────────────────────────────────────────
+  add('GET', '/api/events/:eventId/impact', context => {
+    const event = store.db.select().from(eventsTable).where(eq(eventsTable.id, context.params.eventId as string)).get()
+    if (!event) throw new NovelForgeError('NOT_FOUND', `事件不存在：${context.params.eventId}`)
+    return store.analyzeEventImpact(event.projectId, context.params.eventId as string)
+  })
+
+  // ── 创作控制台 ─────────────────────────────────────────
+  add('GET', '/api/projects/:projectId/control-center', context => store.getControlCenter(context.params.projectId as string))
 
   // ── 审查 ───────────────────────────────────────────────
   add('GET', '/api/projects/:projectId/reviews', context => store.listReviewRuns(context.params.projectId as string))

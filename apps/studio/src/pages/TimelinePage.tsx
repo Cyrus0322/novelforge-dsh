@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { PageProps } from '../app/types.ts'
 import { api, ApiError } from '../lib/api.ts'
 import { toast, useResource } from '../lib/hooks.ts'
 import { label, relativeTime, truncate } from '../lib/format.ts'
-import { Badge, Card, Empty, ErrorBox, Field, Loading, Modal, SectionTitle, Stat, StatusBadge } from '../components/ui.tsx'
-import type { Chapter, StoryEvent } from '../lib/types.ts'
+import { Badge, Card, Empty, ErrorBox, Field, Kv, Loading, Modal, SectionTitle, Stat, StatusBadge } from '../components/ui.tsx'
+import type { Chapter, EventImpact, StoryEvent } from '../lib/types.ts'
 
 const EVENT_EDIT_STATUSES: readonly string[] = ['planned', 'draft', 'confirmed', 'cancelled']
 
@@ -26,6 +26,17 @@ function timelineClass(status: string): string {
   return status === 'planned' || status === 'confirmed' || status === 'cancelled' ? ` ${status}` : ''
 }
 
+const KNOWER_STATE_LABELS: Record<string, string> = {
+  knows: '知道',
+  suspects: '怀疑',
+  misbelieves: '误信',
+  unaware: '不知道',
+}
+
+function knowerStateLabel(state: string): string {
+  return KNOWER_STATE_LABELS[state] ?? state
+}
+
 export function TimelinePage({ projectId, navigate }: PageProps) {
   const events = useResource(() => api.listEvents(projectId), [projectId])
   const chapters = useResource(() => api.listChapters(projectId), [projectId])
@@ -40,6 +51,13 @@ export function TimelinePage({ projectId, navigate }: PageProps) {
   const [editTime, setEditTime] = useState('')
   const [editStatus, setEditStatus] = useState('planned')
   const [saving, setSaving] = useState(false)
+
+  // 影响分析：改一个事件会影响哪些后续内容。
+  const [impactTarget, setImpactTarget] = useState<StoryEvent | null>(null)
+  const [impact, setImpact] = useState<EventImpact | null>(null)
+  const [impactError, setImpactError] = useState<string | null>(null)
+  const [impactLoading, setImpactLoading] = useState(false)
+  const impactRequestRef = useRef(0)
 
   const sorted = useMemo(() => [...(events.data ?? [])].sort(compareEvents), [events.data])
 
@@ -144,6 +162,33 @@ export function TimelinePage({ projectId, navigate }: PageProps) {
 
   function openChapter(chapter: Chapter): void {
     navigate(`/p/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapter.id)}`)
+  }
+
+  async function openImpact(event: StoryEvent): Promise<void> {
+    impactRequestRef.current += 1
+    const requestId = impactRequestRef.current
+    setImpactTarget(event)
+    setImpact(null)
+    setImpactError(null)
+    setImpactLoading(true)
+    try {
+      const result = await api.getEventImpact(event.id)
+      if (impactRequestRef.current !== requestId) return
+      setImpact(result)
+    } catch (cause) {
+      if (impactRequestRef.current !== requestId) return
+      setImpactError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      if (impactRequestRef.current === requestId) setImpactLoading(false)
+    }
+  }
+
+  function closeImpact(): void {
+    impactRequestRef.current += 1
+    setImpactTarget(null)
+    setImpact(null)
+    setImpactError(null)
+    setImpactLoading(false)
   }
 
   if (events.loading && !events.data) return <Loading text="正在载入事件时间线…" />
@@ -328,6 +373,7 @@ export function TimelinePage({ projectId, navigate }: PageProps) {
                       <div style={{ marginTop: 7, fontSize: 13.5, lineHeight: 1.8 }}>{event.summary}</div>
                       <div className="btn-row" style={{ marginTop: 6 }}>
                         <button type="button" className="btn btn-sm" onClick={() => openEdit(event)}>编辑</button>
+                        <button type="button" className="btn btn-sm" onClick={() => { void openImpact(event) }}>影响分析</button>
                       </div>
                     </>
                   )}
@@ -337,6 +383,147 @@ export function TimelinePage({ projectId, navigate }: PageProps) {
           </div>
         </Card>
       )}
+      <Modal
+        open={impactTarget !== null}
+        title={impactTarget ? `影响分析：${truncate(impactTarget.summary, 22)}` : '影响分析'}
+        wide
+        onClose={closeImpact}
+        footer={(
+          <>
+            <button type="button" className="btn" onClick={closeImpact}>关闭</button>
+            {impactTarget && impact && impact.chapters.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  const first = impact.chapters[0]
+                  if (first) openChapter(first.chapter)
+                }}
+              >
+                打开第一个受影响章节
+              </button>
+            )}
+          </>
+        )}
+      >
+        {impactLoading ? (
+          <Loading text="正在分析这个事件和后续内容的关联…" />
+        ) : impactError ? (
+          <ErrorBox
+            error={new Error(impactError)}
+            onRetry={() => { if (impactTarget) void openImpact(impactTarget) }}
+          />
+        ) : impact ? (
+          <div className="stack scroll-y" style={{ maxHeight: '62vh', paddingRight: 4 }}>
+            <div className="notice">
+              改动此事件需回看以下后续内容：共 <strong>{impact.total}</strong> 处关联
+              （后续章节 {impact.chapters.length} · 伏笔 {impact.foreshadowing.length} · 剧情线 {impact.threads.length} · 知情事实 {impact.knowledge.length}）。
+              事件摘要里的关键词会命中未定稿章节的标题 / 摘要 / 章纲，命中越多，改动后越要检查一致性。
+            </div>
+
+            <Kv rows={[
+              { key: '事件', value: impact.event.summary },
+              { key: '状态', value: <StatusBadge status={impact.event.status} /> },
+              { key: '所在章节', value: impact.chapterNo !== null ? `第 ${impact.chapterNo} 章` : '未关联章节' },
+              {
+                key: '关键词',
+                value: impact.keywords.length > 0 ? (
+                  <span className="row-wrap" style={{ gap: 5 }}>
+                    {impact.keywords.map(keyword => <span key={keyword} className="chip">{keyword}</span>)}
+                  </span>
+                ) : '（摘要太短，没有抽出关键词）',
+              },
+            ]} />
+
+            <SectionTitle title="后续受影响章节" hint="只统计未定稿章节；点一行直接打开工作台" />
+            {impact.chapters.length === 0 ? (
+              <div className="hint-box">没有命中的后续章节。要么事件摘要里的关键词太泛，要么后续章节还没写到相关内容。</div>
+            ) : (
+              <div className="list">
+                {impact.chapters.map(item => (
+                  <button
+                    key={item.chapter.id}
+                    type="button"
+                    className="list-item"
+                    style={{ width: '100%' }}
+                    onClick={() => openChapter(item.chapter)}
+                  >
+                    <div className="list-item-main">
+                      <div className="list-item-title">
+                        <span className="mono muted">第 {item.chapter.chapterNo} 章</span>
+                        <span>{item.chapter.title}</span>
+                        <StatusBadge status={item.chapter.status} />
+                      </div>
+                      <div className="list-item-meta">命中：{item.hits.join('、')}</div>
+                    </div>
+                    <div className="list-item-actions"><span className="tiny muted">打开</span></div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="grid-2">
+              <Card title="相关伏笔" subtitle="埋设章节在本事件之后的未回收伏笔" tight>
+                {impact.foreshadowing.length === 0 ? (
+                  <div className="small muted">没有相关伏笔。</div>
+                ) : (
+                  <div className="stack-sm">
+                    {impact.foreshadowing.map(item => (
+                      <div key={item.id} className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                        <span className="small dim">{truncate(item.name, 24)}</span>
+                        <StatusBadge status={item.status} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              <Card title="相关剧情线" subtitle="仍在推进、可能被本事件影响的线" tight>
+                {impact.threads.length === 0 ? (
+                  <div className="small muted">没有相关剧情线。</div>
+                ) : (
+                  <div className="stack-sm">
+                    {impact.threads.map(item => (
+                      <div key={item.id} className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                        <span className="small dim">{truncate(item.name, 24)}</span>
+                        <span className="row-wrap">
+                          <Badge tone="info">{label(item.kind)}</Badge>
+                          <StatusBadge status={item.status} />
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            <Card title="相关知情事实" subtitle="事件参与者知道 / 误信的事：改事件时要一起调整信息差" tight>
+              {impact.knowledge.length === 0 ? (
+                <div className="small muted">参与者没有关联任何知情事实。</div>
+              ) : (
+                <div className="stack-sm">
+                  {impact.knowledge.map(fact => (
+                    <div key={fact.id}>
+                      <div className="small dim">{truncate(fact.proposition, 80)}</div>
+                      <div className="tiny muted">
+                        知情：{fact.knowers.length === 0
+                          ? '（未登记）'
+                          : fact.knowers.map(knower => `${knower.name}·${knowerStateLabel(knower.state)}`).join('、')}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <div className="tiny muted">
+              提示：这里只做只读分析，不会改动任何资料；要改事件请用「编辑」，改完再回来重跑一次影响分析。
+            </div>
+          </div>
+        ) : (
+          <Empty title="还没有分析结果" hint="重新打开影响分析试试。" />
+        )}
+      </Modal>
     </div>
   )
 }

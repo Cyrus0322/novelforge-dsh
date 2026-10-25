@@ -1,6 +1,6 @@
 import type {
-  AuditEntry, ChangeProposal, Chapter, ChapterDetail, ChapterRevision, ChapterSummary, CompareResult, ContextMeta,
-  ContextPack, Entity, Foreshadowing, HealthInfo, IngestBatch, IngestOutcome, KnowledgeFact, Outline, PlotThread, Project,
+  AuditEntry, ChangeProposal, Chapter, ChapterDetail, ChapterRevision, ChapterSummary, CompareResult, ContextMeta, ControlCenter,
+  ContextPack, Entity, EventImpact, Foreshadowing, HealthInfo, IngestBatch, IngestOutcome, KnowledgeFact, Outline, PlotThread, Project,
   ProjectOverview, Relation, ReviewIssue, ReviewRun, ReviewRunSummary, Scene, SearchResult, StoryEvent, WorkflowRun,
 } from './types.ts'
 
@@ -172,6 +172,8 @@ export const api = {
     ),
 
   listEvents: (projectId: string) => request<StoryEvent[]>('GET', `/api/projects/${enc(projectId)}/events`),
+  getControlCenter: (projectId: string) => request<ControlCenter>('GET', `/api/projects/${enc(projectId)}/control-center`),
+  getEventImpact: (eventId: string) => request<EventImpact>('GET', `/api/events/${enc(eventId)}/impact`),
   createEvent: (projectId: string, input: { summary: string; eventTime?: string; status?: string; chapterId?: string }) =>
     request<StoryEvent>('POST', `/api/projects/${enc(projectId)}/events`, input),
   updateEvent: (eventId: string, patch: { summary?: string; eventTime?: string; status?: string; chapterId?: string | null; expectedVersion?: number }) =>
@@ -179,7 +181,19 @@ export const api = {
   listForeshadowing: (projectId: string) => request<Foreshadowing[]>('GET', `/api/projects/${enc(projectId)}/foreshadowing`),
   createForeshadowing: (projectId: string, input: { name: string; description?: string; status?: string; plantChapterId?: string; payoffChapterId?: string }) =>
     request<Foreshadowing>('POST', `/api/projects/${enc(projectId)}/foreshadowing`, input),
-  updateForeshadowing: (id: string, patch: { name?: string; description?: string; status?: string; plantChapterId?: string | null; payoffChapterId?: string | null; expectedVersion?: number }) =>
+  updateForeshadowing: (id: string, patch: {
+    name?: string
+    description?: string
+    status?: string
+    kind?: string
+    importance?: number
+    notes?: string
+    plantChapterId?: string | null
+    payoffChapterId?: string | null
+    /** 最晚回收章号；传 null 清除 */
+    deadlineChapterId?: number | null
+    expectedVersion?: number
+  }) =>
     request<Foreshadowing>('PATCH', `/api/foreshadowing/${enc(id)}`, patch),
 
   listReviews: (projectId: string) => request<ReviewRunSummary[]>('GET', `/api/projects/${enc(projectId)}/reviews`),
@@ -203,9 +217,24 @@ export const api = {
     request<Relation>('PATCH', `/api/relations/${enc(relationId)}`, patch),
 
   listKnowledge: (projectId: string) => request<KnowledgeFact[]>('GET', `/api/projects/${enc(projectId)}/knowledge`),
-  createKnowledge: (projectId: string, input: { proposition: string; truth?: string; publicLevel?: string; chapterId?: string | null; knowers?: Array<{ entityId: string; state: string }>; notes?: string }) =>
+  createKnowledge: (projectId: string, input: {
+    proposition: string
+    truth?: string
+    publicLevel?: string
+    chapterId?: string | null
+    knowers?: Array<{ entityId: string; state: 'knows' | 'suspects' | 'misbelieves' | 'unaware'; sinceChapterId?: string | null; notes?: string }>
+    notes?: string
+  }) =>
     request<KnowledgeFact>('POST', `/api/projects/${enc(projectId)}/knowledge`, input),
-  updateKnowledge: (factId: string, patch: { proposition?: string; truth?: string; publicLevel?: string; chapterId?: string | null; knowers?: Array<{ entityId: string; state: string }>; notes?: string; expectedVersion?: number }) =>
+  updateKnowledge: (factId: string, patch: {
+    proposition?: string
+    truth?: string
+    publicLevel?: string
+    chapterId?: string | null
+    knowers?: Array<{ entityId: string; state: 'knows' | 'suspects' | 'misbelieves' | 'unaware'; sinceChapterId?: string | null; notes?: string }>
+    notes?: string
+    expectedVersion?: number
+  }) =>
     request<KnowledgeFact>('PATCH', `/api/knowledge/${enc(factId)}`, patch),
   deleteKnowledge: (factId: string) => request<{ ok: true }>('DELETE', `/api/knowledge/${enc(factId)}`),
   listOverdueForeshadowing: (projectId: string) =>

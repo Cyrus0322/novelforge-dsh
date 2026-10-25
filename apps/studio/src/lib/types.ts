@@ -117,6 +117,8 @@ export interface Foreshadowing {
   kind: string
   importance: number
   notes: string
+  /** 最晚回收的章号（不是 chapter id）；null 表示未设截止 */
+  deadlineChapterId: number | null
   version: number
   createdAt: string
   updatedAt: string
@@ -397,4 +399,34 @@ export interface KnowledgeFact {
   version: number
   updatedAt: string
   knowers: Array<KnowerEntry & { name: string }>
+}
+
+export interface ControlCenter {
+  progress: {
+    currentChapterNo: number
+    finalizedCount: number
+    totalChapters: number
+    totalWords: number
+    finalizedWords: number
+    targetChapters: number
+  }
+  overdue: Foreshadowing[]
+  dueSoon: Foreshadowing[]
+  stalledThreads: PlotThread[]
+  needsDecisionChapters: Chapter[]
+  unreviewedChapters: Chapter[]
+  pendingProposals: number
+  recentAudit: AuditEntry[]
+  workflows: { running: number; failed: number; recent: WorkflowRun[] }
+}
+
+export interface EventImpact {
+  event: StoryEvent
+  chapterNo: number | null
+  keywords: string[]
+  chapters: Array<{ chapter: Chapter; hits: string[] }>
+  foreshadowing: Foreshadowing[]
+  threads: PlotThread[]
+  knowledge: KnowledgeFact[]
+  total: number
 }

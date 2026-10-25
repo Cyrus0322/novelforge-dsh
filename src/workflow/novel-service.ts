@@ -13,6 +13,7 @@ import type { IngestInput, IngestOutcome } from './ingest.js'
 import type { ContextPack } from '../retrieval/context.js'
 import type { RuntimeConfig } from '../shared/config.js'
 import { NovelForgeError, errorMessage, requireNonEmpty } from '../shared/errors.js'
+import { parseJson } from '../shared/json.js'
 import {
   blueprintMessages,
   chapterPlanMessages,
@@ -139,6 +140,7 @@ export class NovelService {
       const deterministic = [
         ...this.deterministicChecks(chapter.projectId, revision.content),
         ...this.knowledgeChecks(chapter.projectId, revision.content),
+        ...this.characterStateChecks(chapter.projectId, chapter.chapterNo, revision.content),
       ]
       const result: ReviewResult = { summary: data.summary, issues: [...deterministic, ...data.issues] }
       const saved = this.store.createReview(revisionId, result)
@@ -276,6 +278,93 @@ export class NovelService {
     return issues
   }
 
+  /**
+   * 人物状态快照检查：
+   * 1) 伤势未愈却行动自如——快照里 injury.healChapter 晚于当前章，正文里该角色做动作。
+   * 2) 等级回退——后一条快照的等级数值低于前一条且没有注明降级。
+   * 都是确定性规则，报告里给出快照 ID 作为证据。
+   */
+  private characterStateChecks(projectId: string, chapterNo: number, content: string): ReviewIssueInput[] {
+    const issues: ReviewIssueInput[] = []
+    const characters = this.store.listEntities(projectId, 'character')
+    if (!characters.length) return issues
+    const actionVerbs = ['挥', '拔', '奔', '跃', '踹', '跃起', '举起', '握紧', '疾冲', '翻身', '单手', '搏', '斩', '劈', '冲上去', '扛起']
+    const statesByCharacter = new Map<string, Array<{ id: string; chapterNo: number; summary: string; state: Record<string, unknown> }>>()
+
+    for (const character of characters) {
+      const snapshots = this.store.listCharacterStates(character.id)
+        .map(state => {
+          const chapterId = state.chapterId
+          const chapter = chapterId ? this.store.getChapter(chapterId) : null
+          return {
+            id: state.id,
+            chapterNo: chapter ? chapter.chapterNo : 0,
+            summary: state.summary,
+            state: parseJson<Record<string, unknown>>(state.stateJson, {}),
+          }
+        })
+        .sort((left, right) => left.chapterNo - right.chapterNo)
+      if (snapshots.length) statesByCharacter.set(character.id, snapshots)
+    }
+
+    for (const [characterId, snapshots] of statesByCharacter) {
+      const character = characters.find(item => item.id === characterId)
+      if (!character) continue
+      // 取当前章之前最近的一条快照
+      const active = [...snapshots].reverse().find(snapshot => snapshot.chapterNo <= chapterNo) ?? snapshots[0]
+      if (!active) continue
+
+      // —— 伤势未愈 ——
+      const injuries = normalizeInjuries(active.state.injuries ?? active.state.injury)
+      const unhealed = injuries.filter(injury => injury.healChapter !== null && injury.healChapter > chapterNo)
+      if (unhealed.length && content.includes(character.name)) {
+        let cursor = content.indexOf(character.name)
+        while (cursor >= 0) {
+          const windowText = content.slice(Math.max(0, cursor - 120), cursor + character.name.length + 120)
+          const verb = actionVerbs.find(item => windowText.includes(item))
+          const injuryHit = unhealed.find(injury => windowText.includes(injury.desc.slice(0, Math.min(4, injury.desc.length))))
+          if (verb && (injuryHit || unhealed.length > 0)) {
+            const start = Math.max(0, cursor - 120) + Math.max(0, windowText.indexOf(verb))
+            issues.push({
+              category: 'continuity',
+              severity: 'major',
+              start,
+              end: start + (verb?.length ?? 2),
+              issue: `${character.name} 在快照里仍有未愈伤势（${unhealed.map(injury => `${injury.desc}，第 ${injury.healChapter} 章才痊愈`).join('；')}），本章却出现「${verb}」这类动作描写。`,
+              evidence: [{ sourceId: active.id, description: `状态快照（第 ${active.chapterNo} 章）：${active.summary || JSON.stringify(active.state)}` }],
+              suggestedFix: `要么把动作改得受限于伤势（只用另一只手 / 咬牙硬撑并写代价），要么把痊愈章提前并同步状态快照。`,
+            })
+            break
+          }
+          cursor = content.indexOf(character.name, cursor + character.name.length)
+        }
+      }
+
+      // —— 等级回退 ——
+      const levels = snapshots
+        .map(snapshot => ({ snapshot, value: parseLevelNumber(snapshot.state.level) }))
+        .filter((entry): entry is { snapshot: typeof snapshots[number]; value: number } => entry.value !== null)
+      for (let index = 1; index < levels.length; index += 1) {
+        const previous = levels[index - 1]
+        const current = levels[index]
+        if (!previous || !current) continue
+        const marked = current.snapshot.state.levelDown === true || current.snapshot.state.levelDown === 'true'
+        if (current.value < previous.value && !marked) {
+          issues.push({
+            category: 'continuity',
+            severity: 'minor',
+            start: null,
+            end: null,
+            issue: `${character.name} 的等级从「第 ${previous.snapshot.chapterNo} 章的 ${String(previous.snapshot.state.level)}」降到「第 ${current.snapshot.chapterNo} 章的 ${String(current.snapshot.state.level)}」，但快照里没有注明降级原因。`,
+            evidence: [{ sourceId: current.snapshot.id, description: `状态快照（第 ${current.snapshot.chapterNo} 章）：${current.snapshot.summary}` }],
+            suggestedFix: '如果是有意降级（废功/反噬），在快照 state 里加 levelDown: true 并写原因；否则修正等级数值。',
+          })
+        }
+      }
+    }
+    return issues
+  }
+
   private deterministicChecks(projectId: string, content: string): ReviewIssueInput[] {
     const issues: ReviewIssueInput[] = []
     const rules = this.store.listEntities(projectId, 'world_rule', 'confirmed')
@@ -345,4 +434,47 @@ function summarizeResult(value: unknown): unknown {
 export function createNovelService(config: RuntimeConfig, llm?: LlmClient): NovelService {
   const store = new NovelStore(config.databasePath)
   return new NovelService(store, llm ?? new DeepSeekClient(config), config)
+}
+
+interface InjuryEntry { desc: string; healChapter: number | null }
+
+function normalizeInjuries(value: unknown): InjuryEntry[] {
+  if (!Array.isArray(value)) return []
+  const result: InjuryEntry[] = []
+  for (const item of value) {
+    if (typeof item === 'string') {
+      const match = item.match(/第\s*(\d+)\s*章/)
+      result.push({ desc: item, healChapter: match?.[1] ? Number(match[1]) : null })
+      continue
+    }
+    if (typeof item === 'object' && item !== null) {
+      const entry = item as { desc?: unknown; healChapter?: unknown; heal_chapter?: unknown }
+      const desc = typeof entry.desc === 'string' ? entry.desc : ''
+      if (!desc) continue
+      const heal = typeof entry.healChapter === 'number' ? entry.healChapter
+        : typeof entry.heal_chapter === 'number' ? entry.heal_chapter : null
+      result.push({ desc, healChapter: heal })
+    }
+  }
+  return result
+}
+
+function parseLevelNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return null
+  const arabic = value.match(/(\d+)/)
+  if (arabic?.[1]) return Number(arabic[1])
+  // 中文数字：引气七层 / 第三章 / 十七
+  const cn = value.match(/[一二三四五六七八九十]{1,3}/)
+  if (!cn?.[0]) return null
+  const digits: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+  const text = cn[0]
+  if (text === '十') return 10
+  if (text.includes('十')) {
+    const [head, tail] = text.split('十')
+    const tens = head ? (digits[head] ?? 0) : 1
+    const ones = tail ? (digits[tail] ?? 0) : 0
+    return tens * 10 + ones
+  }
+  return digits[text] ?? null
 }

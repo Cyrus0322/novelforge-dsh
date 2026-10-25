@@ -34,6 +34,7 @@ interface ForeshadowEditor {
   description: string
   status: string
   payoffChapterId: string
+  deadlineChapterId: string
   version: number
 }
 
@@ -53,6 +54,25 @@ function isUnrecovered(item: Foreshadowing): boolean {
   return item.status !== 'payoff' && item.status !== 'abandoned'
 }
 
+// 后端 schema 已加 deadlineChapterId（章号，不是章节 id），但 studio 的 Foreshadowing 类型尚未同步。
+type ForeshadowingWithDeadline = Foreshadowing & { deadlineChapterId?: number | null }
+
+function deadlineChapterNo(item: Foreshadowing): number | null {
+  const value = (item as ForeshadowingWithDeadline).deadlineChapterId
+  return typeof value === 'number' && value > 0 ? value : null
+}
+
+/** PATCH /api/foreshadowing/:id 已支持 deadlineChapterId，api.ts 的类型还没声明，这里显式拓宽。 */
+type ForeshadowingPatch = Parameters<typeof api.updateForeshadowing>[1] & { deadlineChapterId?: number | null }
+
+function parseDeadline(text: string): number | null | 'invalid' {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const value = Number(trimmed)
+  if (!Number.isFinite(value) || value < 1) return 'invalid'
+  return Math.floor(value)
+}
+
 function lifecycleRank(status: string): number {
   const index = LIFECYCLE.indexOf(status)
   return index === -1 ? LIFECYCLE.length : index
@@ -61,11 +81,13 @@ function lifecycleRank(status: string): number {
 export function ForeshadowingPage({ projectId }: PageProps) {
   const foreshadowing = useResource(() => api.listForeshadowing(projectId), [projectId])
   const chapters = useResource(() => api.listChapters(projectId), [projectId])
+  const overdue = useResource(() => api.listOverdueForeshadowing(projectId), [projectId])
 
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
   const [newPlantChapterId, setNewPlantChapterId] = useState('')
+  const [newDeadline, setNewDeadline] = useState('')
   const [editor, setEditor] = useState<ForeshadowEditor | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -76,6 +98,29 @@ export function ForeshadowingPage({ projectId }: PageProps) {
     for (const chapter of chapters.data ?? []) map.set(chapter.id, chapter)
     return map
   }, [chapters.data])
+
+  // 写到第几章：优先用逾期接口给出的进度，其次按已定稿章节推算（与后端一致）。
+  const progress = useMemo(() => {
+    const fromOverdue = overdue.data?.find(item => typeof item.progressChapterNo === 'number')?.progressChapterNo
+    if (typeof fromOverdue === 'number') return fromOverdue
+    const list = chapters.data ?? []
+    const finalized = list.filter(chapter => chapter.status === 'finalized')
+    if (finalized.length > 0) return Math.max(...finalized.map(chapter => chapter.chapterNo))
+    return list.length > 0 ? Math.min(...list.map(chapter => chapter.chapterNo)) - 1 : 0
+  }, [overdue.data, chapters.data])
+
+  const deadlineFlags = useMemo(() => {
+    const overdueIds = new Set<string>()
+    for (const item of overdue.data ?? []) overdueIds.add(item.id)
+    const dueSoonIds = new Set<string>()
+    for (const item of foreshadowing.data ?? []) {
+      if (!isUnrecovered(item)) continue
+      const deadline = deadlineChapterNo(item)
+      if (deadline === null || deadline <= progress) continue
+      if (deadline <= progress + 3) dueSoonIds.add(item.id)
+    }
+    return { overdueIds, dueSoonIds }
+  }, [overdue.data, foreshadowing.data, progress])
 
   const sorted = useMemo(() => {
     return [...(foreshadowing.data ?? [])].sort((left, right) => {
@@ -99,6 +144,9 @@ export function ForeshadowingPage({ projectId }: PageProps) {
     }
   }, [foreshadowing.data])
 
+  const overdueCount = overdue.data?.length ?? 0
+  const dueSoonCount = deadlineFlags.dueSoonIds.size
+
   function chapterText(chapterId: string | null): string {
     if (chapterId === null) return '未落到正文'
     const chapter = chapterById.get(chapterId)
@@ -113,6 +161,7 @@ export function ForeshadowingPage({ projectId }: PageProps) {
       description: item.description,
       status: item.status,
       payoffChapterId: item.payoffChapterId ?? '',
+      deadlineChapterId: deadlineChapterNo(item)?.toString() ?? '',
       version: item.version,
     })
   }
@@ -139,6 +188,7 @@ export function ForeshadowingPage({ projectId }: PageProps) {
       await api.updateForeshadowing(item.id, { status, expectedVersion: item.version })
       toast.ok('已保存')
       foreshadowing.reload()
+      overdue.reload()
     } catch (error) {
       if (isVersionConflict(error)) {
         toast.error('资料已被其它窗口修改，已刷新')
@@ -157,20 +207,31 @@ export function ForeshadowingPage({ projectId }: PageProps) {
       toast.error('伏笔名称不能为空。')
       return
     }
+    const deadline = parseDeadline(newDeadline)
+    if (deadline === 'invalid') {
+      toast.error('最晚回收章必须是 ≥ 1 的章号，留空表示不设截止。')
+      return
+    }
     setSaving(true)
     try {
-      await api.createForeshadowing(projectId, {
+      const created = await api.createForeshadowing(projectId, {
         name,
         ...(newDescription.trim() ? { description: newDescription.trim() } : {}),
         status: 'open',
         ...(newPlantChapterId ? { plantChapterId: newPlantChapterId } : {}),
       })
+      if (deadline !== null) {
+        const patch: ForeshadowingPatch = { deadlineChapterId: deadline }
+        await api.updateForeshadowing(created.id, patch)
+      }
       toast.ok('伏笔已埋设')
       setCreating(false)
       setNewName('')
       setNewDescription('')
       setNewPlantChapterId('')
+      setNewDeadline('')
       foreshadowing.reload()
+      overdue.reload()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
     } finally {
@@ -185,19 +246,27 @@ export function ForeshadowingPage({ projectId }: PageProps) {
       setEditorError('伏笔名称不能为空。')
       return
     }
+    const deadline = parseDeadline(editor.deadlineChapterId)
+    if (deadline === 'invalid') {
+      setEditorError('最晚回收章必须是 ≥ 1 的章号，留空表示不设截止。')
+      return
+    }
     setSaving(true)
     setEditorError(null)
     try {
-      await api.updateForeshadowing(editor.id, {
+      const patch: ForeshadowingPatch = {
         name,
         description: editor.description,
         status: editor.status,
         payoffChapterId: editor.payoffChapterId === '' ? null : editor.payoffChapterId,
         expectedVersion: editor.version,
-      })
+        deadlineChapterId: deadline,
+      }
+      await api.updateForeshadowing(editor.id, patch)
       toast.ok('已保存')
       setEditor(null)
       foreshadowing.reload()
+      overdue.reload()
     } catch (error) {
       if (isVersionConflict(error)) {
         toast.error('资料已被其它窗口修改，已刷新')
@@ -226,13 +295,19 @@ export function ForeshadowingPage({ projectId }: PageProps) {
           <div className="muted small">维护埋设、强化、回收与废弃；未回收的伏笔会进入每次写作的上下文包。</div>
         </div>
         <div className="btn-row">
-          <button type="button" className="btn" onClick={foreshadowing.reload}>刷新</button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => { foreshadowing.reload(); chapters.reload(); overdue.reload() }}
+          >
+            刷新
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>埋一条伏笔</button>
         </div>
       </div>
 
       <div className="stat-grid">
-        <Stat label="伏笔总数" value={total} hint="含已废弃" />
+        <Stat label="伏笔总数" value={total} hint={`含已废弃 ${stats.abandoned}`} />
         <Stat
           label="未回收"
           value={stats.unrecovered}
@@ -240,7 +315,12 @@ export function ForeshadowingPage({ projectId }: PageProps) {
           hint={`open ${stats.open} · reinforced ${stats.reinforced}`}
         />
         <Stat label="已回收" value={stats.recovered} tone="ok" hint="payoff" />
-        <Stat label="已废弃" value={stats.abandoned} hint="abandoned" />
+        <Stat
+          label="逾期"
+          value={overdueCount}
+          tone={overdueCount > 0 ? 'danger' : undefined}
+          hint={`已写到第 ${progress} 章 · ${dueSoonCount} 条 3 章内到期`}
+        />
       </div>
 
       {stats.unrecovered > 0 && (
@@ -249,9 +329,19 @@ export function ForeshadowingPage({ projectId }: PageProps) {
         </div>
       )}
 
+      {overdueCount > 0 && (
+        <div className="notice" style={{ borderColor: 'rgba(227, 114, 106, 0.38)', background: 'var(--danger-soft)', color: '#f2b6b0' }}>
+          有 <strong>{overdueCount} 条伏笔已超过最晚回收章</strong>（当前进度：第 {progress} 章）：写作上下文会标红提醒，建议尽快回收；确认放弃的就改成「已废弃」。
+        </div>
+      )}
+
+      {overdue.error && (
+        <div className="error-box">逾期列表加载失败：{overdue.error.message}（逾期标记可能不完整）</div>
+      )}
+
       <SectionTitle
         title="伏笔"
-        hint={`${total} 条 · 未回收 ${stats.unrecovered} 条`}
+        hint={`${total} 条 · 未回收 ${stats.unrecovered} 条 · 逾期 ${overdueCount} 条 · 当前第 ${progress} 章`}
         actions={<span className="tiny muted">埋设 / 回收章节为空表示该伏笔还没有落到正文</span>}
       />
 
@@ -286,6 +376,19 @@ export function ForeshadowingPage({ projectId }: PageProps) {
               ))}
             </select>
           </label>
+          <label className="field">
+            <span className="field-label">最晚回收章（可选）</span>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              step={1}
+              value={newDeadline}
+              onChange={event => setNewDeadline(event.target.value)}
+              placeholder="填章号，例如 12；留空表示不设截止"
+            />
+            <span className="field-hint">到这一章仍未回收，会在控制台和写作上下文里标红提醒。</span>
+          </label>
         </div>
       </Modal>
 
@@ -301,6 +404,9 @@ export function ForeshadowingPage({ projectId }: PageProps) {
             {sorted.map(item => {
               const unrecovered = isUnrecovered(item)
               const busy = pendingId === item.id
+              const deadline = deadlineChapterNo(item)
+              const isOverdue = deadlineFlags.overdueIds.has(item.id)
+              const isDueSoon = deadlineFlags.dueSoonIds.has(item.id)
               return (
                 <div className="list-item" key={item.id} style={{ cursor: 'default', opacity: item.status === 'abandoned' ? 0.72 : 1 }}>
                   <div className="list-item-main">
@@ -308,6 +414,15 @@ export function ForeshadowingPage({ projectId }: PageProps) {
                       <span>{item.name}</span>
                       <Badge tone={statusTone(item.status)} dot>{statusText(item.status)}</Badge>
                       {unrecovered && <span className="badge badge-warn">待回响</span>}
+                      {unrecovered && (
+                        isOverdue ? (
+                          <Badge tone="danger" dot>逾期 · 最晚第 {deadline} 章</Badge>
+                        ) : deadline !== null ? (
+                          <Badge tone={isDueSoon ? 'warn' : 'muted'} dot={isDueSoon}>最晚第 {deadline} 章</Badge>
+                        ) : (
+                          <span className="badge badge-muted">未设最晚回收章</span>
+                        )
+                      )}
                       <span className="tiny muted" style={{ marginLeft: 'auto' }}>v{item.version}</span>
                     </div>
 
@@ -318,6 +433,9 @@ export function ForeshadowingPage({ projectId }: PageProps) {
                     <div className="row-wrap" style={{ marginTop: 6 }}>
                       <span className="tiny muted">埋设：{chapterText(item.plantChapterId)}</span>
                       <span className="tiny muted">回收：{chapterText(item.payoffChapterId)}</span>
+                      <span className="tiny muted" style={isOverdue ? { color: 'var(--danger)' } : undefined}>
+                        最晚回收：{deadline !== null ? `第 ${deadline} 章` : '未设置'}
+                      </span>
                       <span className="tiny muted">更新于 {relativeTime(item.updatedAt)}</span>
                     </div>
 
@@ -412,6 +530,20 @@ export function ForeshadowingPage({ projectId }: PageProps) {
                 <span className="field-hint">埋设章节只读展示；这里可以指定或清空回收章节。</span>
               </label>
             </div>
+
+            <label className="field">
+              <span className="field-label">最晚回收章 deadlineChapterId</span>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                step={1}
+                value={editor.deadlineChapterId}
+                onChange={event => setEditor({ ...editor, deadlineChapterId: event.target.value })}
+                placeholder="章号，例如 12；留空表示不设截止"
+              />
+              <span className="field-hint">填「第几章」而不是章节 ID；到章未回收会在控制台与写作上下文标红。</span>
+            </label>
 
             <div className="tiny muted">
               版本 v{editor.version} · id {editor.id.slice(0, 8)} · 保存会带 expectedVersion，避免覆盖其它窗口的修改。

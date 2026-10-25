@@ -39,7 +39,7 @@ interface OverviewCounts {
 }
 interface ProjectOverview { project: Project; counts: OverviewCounts }
 interface ChapterSummary {
-  chapter: { id: string; chapterNo: number; title: string; status: string; updatedAt: string; summary?: string }
+  chapter: { id: string; chapterNo: number; title: string; status: string; updatedAt: string; summary?: string; outlineId?: string | null }
   revisionCount: number
   latest: { id: string; revisionNo: number; status: string; kind: string; words: number; createdAt: string } | null
 }
@@ -54,7 +54,7 @@ interface Foreshadowing {
   importance: number; notes: string; deadlineChapterId: number | null; version: number
   plantChapterId: string | null; payoffChapterId: string | null
 }
-interface PlotThread { id: string; name: string; kind: string; goal: string; summary: string; status: string; version: number }
+interface PlotThread { id: string; name: string; kind: string; goal: string; summary: string; status: string; version: number; currentChapterId: string | null }
 interface Relation { id: string; sourceName: string; targetName: string; kind: string; tension: string; status: string; version: number }
 interface Scene {
   id: string; sceneNo: number; beat: string; goal: string; conflict: string; outcome: string
@@ -90,7 +90,16 @@ interface IngestOutcome {
   proposals: Proposal[]
 }
 
-type Tab = 'chapters' | 'entities' | 'threads' | 'relations' | 'timeline' | 'foreshadowing' | 'knowledge' | 'ingest' | 'proposals'
+type Tab = 'chapters' | 'outline' | 'entities' | 'graph' | 'threads' | 'relations' | 'timeline' | 'foreshadowing' | 'knowledge' | 'ingest' | 'proposals'
+
+interface OutlineRow {
+  id: string
+  parentId: string | null
+  level: string
+  chapterNo: number | null
+  title: string
+  status: string
+}
 
 // ── 数据访问：优先走 DSH 宿主同源路由，其次回退到独立本地服务 ──────────
 type Endpoint = { kind: 'host'; prefix: string } | { kind: 'standalone'; base: string }
@@ -305,6 +314,8 @@ export function NovelForgePanel() {
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [batches, setBatches] = useState<IngestBatch[]>([])
   const [knowledge, setKnowledge] = useState<KnowledgeFact[]>([])
+  const [outlines, setOutlines] = useState<OutlineRow[]>([])
+  const [collapsedVolumes, setCollapsedVolumes] = useState<Record<string, boolean>>({})
   const [hits, setHits] = useState<SearchHit[]>([])
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<Tab>('chapters')
@@ -361,7 +372,7 @@ export function NovelForgePanel() {
     setError(null)
     try {
       const encoded = encodeURIComponent(id)
-      const [detail, chapterList, entityList, threadList, relationList, eventList, shadowList, proposalList, batchList, knowledgeList] = await Promise.all([
+      const [detail, chapterList, entityList, threadList, relationList, eventList, shadowList, proposalList, batchList, knowledgeList, outlineList] = await Promise.all([
         apiGet<ProjectOverview>(`/api/projects/${encoded}`),
         apiGet<ChapterSummary[]>(`/api/projects/${encoded}/chapter-summaries`),
         apiGet<Entity[]>(`/api/projects/${encoded}/entities`),
@@ -372,6 +383,7 @@ export function NovelForgePanel() {
         apiGet<Proposal[]>(`/api/projects/${encoded}/proposals?status=pending`),
         apiGet<IngestBatch[]>(`/api/projects/${encoded}/ingest-batches`),
         apiGet<KnowledgeFact[]>(`/api/projects/${encoded}/knowledge`),
+        apiGet<OutlineRow[]>(`/api/projects/${encoded}/outlines`),
       ])
       if (!mounted.current) return
       setOverview(detail)
@@ -384,6 +396,7 @@ export function NovelForgePanel() {
       setProposals(proposalList)
       setBatches(batchList)
       setKnowledge(knowledgeList)
+      setOutlines(outlineList)
     } catch (cause) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -449,6 +462,112 @@ export function NovelForgePanel() {
     const all = chapters.map(item => item.chapter.chapterNo)
     return all.length ? Math.min(...all) - 1 : 0
   }, [chapters])
+
+  // 章节按卷分组：chapter.outlineId → 章级大纲 → parentId → 卷大纲
+  const volumeGroups = useMemo(() => {
+    const volumes = outlines.filter(item => item.level === 'volume')
+    const chapterOutlines = new Map(outlines.filter(item => item.level === 'chapter').map(item => [item.id, item]))
+    const groups = volumes.map(volume => ({
+      id: volume.id,
+      title: volume.title,
+      status: volume.status,
+      items: [] as ChapterSummary[],
+    }))
+    const byId = new Map(groups.map(group => [group.id, group]))
+    const loose: ChapterSummary[] = []
+    for (const item of chapters) {
+      const chapterOutline = item.chapter.outlineId ? chapterOutlines.get(item.chapter.outlineId) : undefined
+      const volumeId = chapterOutline?.parentId ?? null
+      const group = volumeId ? byId.get(volumeId) : undefined
+      if (group) group.items.push(item)
+      else loose.push(item)
+    }
+    return { groups: groups.filter(group => group.items.length > 0 || volumes.length > 0), loose }
+  }, [outlines, chapters])
+
+  const foreshadowReminders = useMemo(() => {
+    const open = foreshadowing.filter(item => item.status === 'open' || item.status === 'reinforced')
+    const overdue = open.filter(item => item.deadlineChapterId !== null && item.deadlineChapterId > 0 && item.deadlineChapterId <= progressChapter)
+    const dueSoon = open.filter(item => item.deadlineChapterId !== null && item.deadlineChapterId > progressChapter && item.deadlineChapterId <= progressChapter + 3)
+    return { overdue, dueSoon }
+  }, [foreshadowing, progressChapter])
+
+  const stalledThreads = useMemo(() => {
+    const chapterNoById = new Map(chapters.map(item => [item.chapter.id, item.chapter.chapterNo]))
+    return threads.filter(thread => {
+      if (thread.status === 'resolved' || thread.status === 'abandoned') return false
+      if (!thread.currentChapterId) return true
+      const chapterNo = chapterNoById.get(thread.currentChapterId) ?? progressChapter
+      return progressChapter - chapterNo >= 5
+    })
+  }, [threads, chapters, progressChapter])
+
+  // 关系图谱：简单力导向布局（纯计算，不依赖 DOM 尺寸）
+  const graph = useMemo(() => {
+    const nodes = entities
+      .filter(entity => ['character', 'faction', 'location'].includes(entity.kind))
+      .map(entity => ({ id: entity.id, name: entity.name, kind: entity.kind, importance: entity.importance }))
+    const nodeIds = new Set(nodes.map(node => node.id))
+    const edges = relations.filter(relation => nodeIds.has(relation.sourceName ? nodes.find(n => n.name === relation.sourceName)?.id ?? '' : '') || true)
+      .map(relation => {
+        const source = nodes.find(node => node.name === relation.sourceName)
+        const target = nodes.find(node => node.name === relation.targetName)
+        return source && target ? { source: source.id, target: target.id, label: relation.kind } : null
+      })
+      .filter((edge): edge is { source: string; target: string; label: string } => edge !== null)
+
+    const size = nodes.length
+    const positions = new Map<string, { x: number; y: number; vx: number; vy: number }>()
+    nodes.forEach((node, index) => {
+      const angle = (index / Math.max(1, size)) * Math.PI * 2
+      positions.set(node.id, { x: 400 + Math.cos(angle) * 160, y: 260 + Math.sin(angle) * 160, vx: 0, vy: 0 })
+    })
+    for (let iteration = 0; iteration < 120; iteration += 1) {
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const left = nodes[i] as { id: string }
+          const right = nodes[j] as { id: string }
+          const a = positions.get(left.id)
+          const b = positions.get(right.id)
+          if (!a || !b) continue
+          const dx = a.x - b.x
+          const dy = a.y - b.y
+          const distance = Math.max(1, Math.hypot(dx, dy))
+          const force = 4200 / (distance * distance)
+          a.vx += (dx / distance) * force
+          a.vy += (dy / distance) * force
+          b.vx -= (dx / distance) * force
+          b.vy -= (dy / distance) * force
+        }
+      }
+      for (const edge of edges) {
+        const a = positions.get(edge.source)
+        const b = positions.get(edge.target)
+        if (!a || !b) continue
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const distance = Math.max(1, Math.hypot(dx, dy))
+        const force = (distance - 150) * 0.006
+        a.vx += (dx / distance) * force
+        a.vy += (dy / distance) * force
+        b.vx -= (dx / distance) * force
+        b.vy -= (dy / distance) * force
+      }
+      for (const node of nodes) {
+        const position = positions.get(node.id)
+        if (!position) continue
+        position.vx += (400 - position.x) * 0.004
+        position.vy += (260 - position.y) * 0.004
+        position.x += Math.max(-12, Math.min(12, position.vx))
+        position.y += Math.max(-12, Math.min(12, position.vy))
+        position.vx *= 0.6
+        position.vy *= 0.6
+        position.x = Math.max(60, Math.min(740, position.x))
+        position.y = Math.max(50, Math.min(470, position.y))
+      }
+    }
+    return { nodes, edges, positions }
+  }, [entities, relations])
   const isOverdue = (item: Foreshadowing): boolean =>
     (item.status === 'open' || item.status === 'reinforced') && item.deadlineChapterId !== null
     && item.deadlineChapterId > 0 && item.deadlineChapterId <= progressChapter
@@ -773,6 +892,23 @@ export function NovelForgePanel() {
     }
   }
 
+  const renderChapterRow = (item: ChapterSummary) => {
+    const isOverdueChapter = item.chapter.status === 'needs_author_decision'
+    return (
+      <Row key={item.chapter.id} onClick={() => { void openChapter(item.chapter.id) }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ color: C.muted, minWidth: 30 }}>{item.chapter.chapterNo}</span>
+          <span style={{ fontFamily: 'var(--dsw-alias-font-serif, "Songti SC", Georgia, serif)' }}>{item.chapter.title}</span>
+          <StatusPill status={item.chapter.status} />
+          {isOverdueChapter && <Pill color={C.danger}>待决策</Pill>}
+          <div style={{ flex: 1 }} />
+          <span style={{ color: C.muted, fontSize: 11 }}>{item.latest ? `${item.latest.words} 字` : '无正文'} · v{item.latest?.revisionNo ?? 0}</span>
+        </div>
+        {item.chapter.summary && <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>{item.chapter.summary.slice(0, 70)}</div>}
+      </Row>
+    )
+  }
+
   const retry = (): void => { cachedEndpoint = null; setLoading(true); setAttempt(value => value + 1) }
 
   // ── 章节阅读 / 编辑视图 ──
@@ -885,7 +1021,9 @@ export function NovelForgePanel() {
 
   const tabs: Array<[Tab, string, number | null]> = [
     ['chapters', '章节', chapters.length],
+    ['outline', '大纲', outlines.filter(item => item.level === 'volume').length],
     ['entities', '资料', entities.length],
+    ['graph', '图谱', relations.length],
     ['threads', '剧情线', threads.length],
     ['relations', '关系', relations.length],
     ['timeline', '时间线', events.length],
@@ -951,6 +1089,18 @@ export function NovelForgePanel() {
         </div>
       )}
 
+      {counts && (
+        <div style={{ display: 'flex', gap: 12, padding: '7px 16px', borderBottom: `1px solid ${C.line}`, flexWrap: 'wrap', fontSize: 11.5, color: C.dim, alignItems: 'center', background: 'rgba(255,255,255,0.015)' }}>
+          <span>进度：写到第 <strong style={{ color: C.text }}>{progressChapter}</strong> 章 · 已定稿 {counts.finalizedChapters}/{counts.chapters}</span>
+          <span style={{ color: foreshadowReminders.overdue.length ? C.danger : C.muted }}>逾期伏笔 {foreshadowReminders.overdue.length}</span>
+          <span style={{ color: foreshadowReminders.dueSoon.length ? C.warn : C.muted }}>3 章内到期 {foreshadowReminders.dueSoon.length}</span>
+          <span style={{ color: stalledThreads.length ? C.warn : C.muted }}>停滞剧情线 {stalledThreads.length}</span>
+          <span style={{ color: counts.pendingProposals ? C.warn : C.muted }}>待审批 {counts.pendingProposals}</span>
+          {counts.openIssues > 0 && <span style={{ color: C.danger }}>审查问题 {counts.openIssues}</span>}
+          <div style={{ flex: 1 }} />
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 6, padding: '8px 16px', borderBottom: `1px solid ${C.line}`, flexWrap: 'wrap' }}>
         {tabs.map(([key, label, count]) => (
           <button key={key} type="button" onClick={() => setTab(key)}
@@ -988,18 +1138,128 @@ export function NovelForgePanel() {
                 <button type="button" style={btnStyle} onClick={() => setNewChapterTitle('')}>+ 新建章节</button>
                 {aiReady && <button type="button" style={{ ...btnStyle, borderColor: 'rgba(216,166,87,0.5)', color: C.accent }} disabled={busy !== null} onClick={() => { void planOutline() }}>{busy === 'plan' ? '规划中…' : 'AI 规划后续章节'}</button>}
               </div>
-              {chapters.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有章节。</div>}
-              {chapters.map(item => (
-                <Row key={item.chapter.id} onClick={() => { void openChapter(item.chapter.id) }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span style={{ color: C.muted, minWidth: 30 }}>{item.chapter.chapterNo}</span>
-                    <span style={{ fontFamily: 'var(--dsw-alias-font-serif, "Songti SC", Georgia, serif)' }}>{item.chapter.title}</span>
-                    <StatusPill status={item.chapter.status} />
-                    <div style={{ flex: 1 }} />
-                    <span style={{ color: C.muted, fontSize: 11 }}>{item.latest ? `${item.latest.words} 字` : '无正文'} · v{item.latest?.revisionNo ?? 0}</span>
+              {(foreshadowReminders.overdue.length > 0 || foreshadowReminders.dueSoon.length > 0) && (
+                <div style={{ marginBottom: 8, padding: '7px 10px', borderRadius: 8, border: `1px solid rgba(223,169,92,0.4)`, background: 'rgba(223,169,92,0.08)', fontSize: 11.5, lineHeight: 1.7 }}>
+                  {foreshadowReminders.overdue.length > 0 && (
+                    <div style={{ color: C.danger }}>逾期未回收：{foreshadowReminders.overdue.map(item => item.name).join('、')}</div>
+                  )}
+                  {foreshadowReminders.dueSoon.length > 0 && (
+                    <div style={{ color: C.warn }}>3 章内到期：{foreshadowReminders.dueSoon.map(item => `${item.name}（第 ${item.deadlineChapterId} 章）`).join('、')}</div>
+                  )}
+                </div>
+              )}
+              {chapters.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有章节。可以「AI 规划后续章节」或手动新建。</div>}
+              {volumeGroups.groups.map(group => {
+                const collapsed = collapsedVolumes[group.id] === true
+                return (
+                  <div key={group.id} style={{ marginBottom: 6 }}>
+                    <Row onClick={() => setCollapsedVolumes({ ...collapsedVolumes, [group.id]: !collapsed })}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ color: C.accent }}>{collapsed ? '▸' : '▾'}</span>
+                        <strong style={{ fontWeight: 500, fontFamily: 'var(--dsw-alias-font-serif, "Songti SC", Georgia, serif)' }}>{group.title}</strong>
+                        <Pill>{group.items.length} 章</Pill>
+                        <StatusPill status={group.status} />
+                      </div>
+                    </Row>
+                    {!collapsed && group.items.map(item => renderChapterRow(item))}
                   </div>
-                </Row>
+                )
+              })}
+              {volumeGroups.loose.length > 0 && (
+                <div>
+                  <div style={{ color: C.muted, fontSize: 11, padding: '8px 10px 4px' }}>未归卷</div>
+                  {volumeGroups.loose.map(item => renderChapterRow(item))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'outline' && (
+            <div style={{ padding: '6px 10px' }}>
+              {outlines.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有大纲。去「章节」页点「AI 规划后续章节」。</div>}
+              {outlines.filter(item => item.level === 'volume').map(volume => (
+                <div key={volume.id} style={{ marginBottom: 10 }}>
+                  <div style={{ padding: '5px 8px', color: C.accent, fontSize: 12.5, fontWeight: 500 }}>
+                    卷 · {volume.title} <span style={{ color: C.muted, fontSize: 11 }}>{volume.status}</span>
+                  </div>
+                  {outlines
+                    .filter(item => item.level === 'chapter' && item.parentId === volume.id)
+                    .sort((left, right) => (left.chapterNo ?? 0) - (right.chapterNo ?? 0))
+                    .map(outline => {
+                      const chapter = chapters.find(item => item.chapter.outlineId === outline.id)
+                      return (
+                        <Row key={outline.id} onClick={() => { if (chapter) void openChapter(chapter.chapter.id) }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <span style={{ color: C.muted, minWidth: 30 }}>{outline.chapterNo}</span>
+                            <span>{outline.title}</span>
+                            <StatusPill status={chapter?.chapter.status ?? outline.status} />
+                            <div style={{ flex: 1 }} />
+                            <span style={{ color: C.muted, fontSize: 11 }}>{chapter ? '打开 →' : '未建章节'}</span>
+                          </div>
+                        </Row>
+                      )
+                    })}
+                </div>
               ))}
+              {outlines.filter(item => item.level === 'chapter' && item.parentId === null).length > 0 && (
+                <div>
+                  <div style={{ color: C.muted, fontSize: 11, padding: '6px 8px' }}>未归卷章节</div>
+                  {outlines.filter(item => item.level === 'chapter' && item.parentId === null).map(outline => {
+                    const chapter = chapters.find(item => item.chapter.outlineId === outline.id)
+                    return (
+                      <Row key={outline.id} onClick={() => { if (chapter) void openChapter(chapter.chapter.id) }}>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <span style={{ color: C.muted, minWidth: 30 }}>{outline.chapterNo}</span>
+                          <span>{outline.title}</span>
+                        </div>
+                      </Row>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'graph' && (
+            <div style={{ padding: 10 }}>
+              {graph.nodes.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有人物/势力/地点节点。先去「资料」页建几个。</div>}
+              {graph.nodes.length > 0 && (
+                <>
+                  <svg viewBox="0 0 800 520" style={{ width: '100%', height: 420, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 10 }}>
+                    {graph.edges.map((edge, index) => {
+                      const from = graph.positions.get(edge.source)
+                      const to = graph.positions.get(edge.target)
+                      if (!from || !to) return null
+                      return (
+                        <g key={`${edge.source}-${edge.target}-${index}`}>
+                          <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={C.line} strokeWidth={1.2} />
+                          <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 3} fill={C.muted} fontSize={9} textAnchor="middle">{edge.label}</text>
+                        </g>
+                      )
+                    })}
+                    {graph.nodes.map(node => {
+                      const position = graph.positions.get(node.id)
+                      if (!position) return null
+                      const radius = node.kind === 'character' ? 20 : node.kind === 'faction' ? 24 : 18
+                      return (
+                        <g key={node.id} style={{ cursor: 'pointer' }} onClick={() => {
+                          const entity = entities.find(item => item.id === node.id)
+                          if (entity) void openEntityDetail(entity)
+                        }}>
+                          <circle cx={position.x} cy={position.y} r={radius} fill={node.kind === 'character' ? 'rgba(216,166,87,0.18)' : node.kind === 'faction' ? 'rgba(122,167,220,0.18)' : 'rgba(108,192,139,0.15)'} stroke={node.kind === 'character' ? C.accent : node.kind === 'faction' ? C.info : C.ok} />
+                          <text x={position.x} y={position.y + 3} fill={C.text} fontSize={10} textAnchor="middle">{node.name.slice(0, 5)}</text>
+                        </g>
+                      )
+                    })}
+                  </svg>
+                  <div style={{ display: 'flex', gap: 10, marginTop: 8, color: C.muted, fontSize: 11 }}>
+                    <span>● 人物 {graph.nodes.filter(node => node.kind === 'character').length}</span>
+                    <span>● 势力 {graph.nodes.filter(node => node.kind === 'faction').length}</span>
+                    <span>● 地点 {graph.nodes.filter(node => node.kind === 'location').length}</span>
+                    <span>边 {graph.edges.length}（点击节点看详情）</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1091,6 +1351,8 @@ export function NovelForgePanel() {
               {foreshadowing.length === 0 && <div style={{ padding: 16, color: C.muted }}>还没有伏笔记录。建议每条都填「最晚回收章」，逾期会在总览标红。</div>}
               {foreshadowing.map(item => {
                 const overdue = isOverdue(item)
+                const dueSoon = !overdue && item.deadlineChapterId !== null && item.deadlineChapterId > progressChapter
+                  && item.deadlineChapterId <= progressChapter + 3
                 return (
                   <Row key={item.id}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1098,8 +1360,8 @@ export function NovelForgePanel() {
                       <StatusPill status={item.status} />
                       {item.kind && <Pill>{item.kind}</Pill>}
                       {item.deadlineChapterId ? (
-                        <Pill color={overdue ? C.danger : C.muted}>
-                          {overdue ? `逾期：应第 ${item.deadlineChapterId} 章前回收` : `最晚第 ${item.deadlineChapterId} 章`}
+                        <Pill color={overdue ? C.danger : dueSoon ? C.warn : C.muted}>
+                          {overdue ? `逾期：应第 ${item.deadlineChapterId} 章前回收` : dueSoon ? `即将到期：第 ${item.deadlineChapterId} 章` : `最晚第 ${item.deadlineChapterId} 章`}
                         </Pill>
                       ) : <Pill color={C.muted}>未设截止章</Pill>}
                       <div style={{ flex: 1 }} />

@@ -672,3 +672,48 @@ SearchResult  { recordId, recordType, sourceId, status, snippet }
 
 `POST /api/revisions/:revisionId/review` 的确定性检查里新增「信息来源不明」：
 角色提到自己 `unaware` 的事实 → `category=character`、`severity=major`、`evidence[].sourceId` 指向知情事实。
+
+---
+
+## 12. 0.10.0 新增端点（影响分析 / 创作控制台）
+
+> 端点数从 73 增至 **75**。
+
+### 12.1 事件影响分析
+
+`GET /api/events/:eventId/impact`
+
+返回：
+
+```ts
+{
+  event: StoryEvent
+  chapterNo: number | null            // 事件所在章
+  keywords: string[]                  // 从事件摘要与参与者名提取的关键词
+  chapters: Array<{ chapter: Chapter; hits: string[] }>   // 之后的未定稿章节里命中关键词的
+  foreshadowing: Foreshadowing[]      // 埋设章 >= 事件章、仍未回收
+  threads: PlotThread[]               // 尚未结束、当前章 >= 事件章
+  knowledge: KnowledgeFact[]          // 知情者包含事件参与者的知情事实
+  total: number
+}
+```
+
+用途：改动关键事件前，先知道会波及哪些后续章节、伏笔、剧情线与知情设定。
+
+### 12.2 创作控制台
+
+`GET /api/projects/:projectId/control-center`
+
+返回：`progress`（当前章号/已定稿/总章数/总字数/已定稿字数/目标章数）、
+`overdue` 与 `dueSoon` 伏笔、`stalledThreads`（当前章落后 ≥5 章或未指定）、
+`needsDecisionChapters`、`unreviewedChapters`、`pendingProposals`、
+`recentAudit`（最近 10 条）、`workflows`（running/failed/recent）。
+
+### 12.3 审查新增确定性检查
+
+`POST /api/revisions/:revisionId/review` 现在还会：
+
+- **伤势未愈却行动**：人物状态快照 `injuries[{desc, healChapter}]` 中 `healChapter > 当前章`，
+  且正文该角色附近出现动作词 → `continuity/major`，证据指向快照。
+- **等级回退**：相邻两次快照等级数值下降且未标记 `levelDown: true` → `continuity/minor`。
+- **伏笔期限**：逾期伏笔会出现在写作上下文的「未回收伏笔（含回收期限）」段落，并给出提醒。

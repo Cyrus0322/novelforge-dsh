@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { api } from '../lib/api.ts'
 import type { PageProps } from '../app/types.ts'
-import type { IngestStats } from '../lib/types.ts'
+import type { ControlCenter, Foreshadowing, IngestStats } from '../lib/types.ts'
 import { useResource } from '../lib/hooks.ts'
 import { countWords, formatTime, label, relativeTime, safeJson, severityTone, statusTone, truncate } from '../lib/format.ts'
 import type { Tone } from '../lib/format.ts'
@@ -82,8 +82,262 @@ function extractedCount(stats: Partial<IngestStats>): number {
     + (stats.foreshadowing ?? 0) + (stats.threads ?? 0)
 }
 
+// ── 创作控制台 ───────────────────────────────────────────
+
+const AUDIT_LABELS: Record<string, string> = {
+  'chapter.create': '新建章节',
+  'chapter.update': '更新章节',
+  'chapter.plan': '规划章节',
+  'chapter.finalize': '定稿',
+  'chapter.finalize_manual': '人工定稿',
+  'entity.create': '新建实体',
+  'entity.update': '更新实体',
+  'entity.apply_proposal': '应用实体变更',
+  'event.create': '新建事件',
+  'event.update': '更新事件',
+  'event.apply_proposal': '应用事件变更',
+  'foreshadowing.create': '埋设伏笔',
+  'foreshadowing.update': '更新伏笔',
+  'foreshadowing.deadline': '设置最晚回收章',
+  'foreshadowing.apply_proposal': '应用伏笔变更',
+  'relation.create': '新建关系',
+  'relation.update': '更新关系',
+  'relation.delete': '删除关系',
+  'relation.apply_proposal': '应用关系变更',
+  'thread.create': '新建剧情线',
+  'thread.update': '更新剧情线',
+  'thread.delete': '删除剧情线',
+  'thread.apply_proposal': '应用剧情线变更',
+  'knowledge.create': '新建知情事实',
+  'knowledge.update': '更新知情事实',
+  'knowledge.delete': '删除知情事实',
+  'outline.update': '更新大纲',
+  'scene.create': '新建场景',
+  'scene.update': '更新场景',
+  'scene.delete': '删除场景',
+  'review.create': '发起审查',
+  'issue.update': '处理审查问题',
+  'proposal.create': '生成变更提议',
+  'proposal.reject': '驳回变更提议',
+  'ingest.create': '素材整理',
+  'ingest.apply': '应用素材批次',
+  'project.create': '新建项目',
+  'project.update': '更新项目',
+}
+
+type ForeshadowingWithDeadline = Foreshadowing & { deadlineChapterId?: number | null }
+
+function deadlineChapterNo(item: Foreshadowing): number | null {
+  const value = (item as ForeshadowingWithDeadline).deadlineChapterId
+  return typeof value === 'number' && value > 0 ? value : null
+}
+
+function auditText(action: string): string {
+  return AUDIT_LABELS[action] ?? action
+}
+
+/** Dashboard 顶部的「创作控制台」：进度、伏笔风险、卡点、审计与工作流。 */
+function ControlCenterBlock({ control, goto, openChapter }: {
+  control: ControlCenter
+  goto: (path: string) => void
+  openChapter: (chapterId: string) => void
+}) {
+  const { progress, overdue, dueSoon, stalledThreads, needsDecisionChapters, unreviewedChapters, workflows, recentAudit } = control
+  const target = progress.targetChapters > 0
+    ? progress.targetChapters
+    : Math.max(progress.totalChapters, progress.currentChapterNo + 1)
+  const percent = Math.min(100, Math.round((progress.currentChapterNo / Math.max(target, 1)) * 100))
+
+  return (
+    <div className="stack">
+      <div className="stat-grid">
+        <Stat
+          label="当前进度"
+          value={`第 ${progress.currentChapterNo} 章`}
+          hint={<div className="meter" style={{ marginTop: 6 }}><span style={{ width: `${percent}%` }} /></div>}
+          tone="accent"
+          onClick={() => goto('chapters')}
+        />
+        <Stat label="已定稿" value={`${progress.finalizedCount} / ${progress.totalChapters}`} hint={`定稿 ${progress.finalizedWords.toLocaleString()} 字`} />
+        <Stat label="正文总字数" value={progress.totalWords.toLocaleString()} hint={progress.targetChapters > 0 ? `目标 ${progress.targetChapters} 章` : '目标章数未设定'} />
+        <Stat
+          label="待决策章节"
+          value={needsDecisionChapters.length}
+          hint="待定稿 / 待作者决策"
+          tone={needsDecisionChapters.length > 0 ? 'warn' : undefined}
+          onClick={() => goto('chapters')}
+        />
+        <Stat
+          label="停滞剧情线"
+          value={stalledThreads.length}
+          hint="5 章未推进或未落到章节"
+          tone={stalledThreads.length > 0 ? 'warn' : undefined}
+          onClick={() => goto('entities')}
+        />
+        <Stat label="待审批变更" value={control.pendingProposals} tone={control.pendingProposals > 0 ? 'warn' : undefined} onClick={() => goto('proposals')} />
+        <Stat
+          label="工作流"
+          value={`${workflows.running} 运行中`}
+          hint={`失败 ${workflows.failed}`}
+          tone={workflows.failed > 0 ? 'danger' : undefined}
+          onClick={() => goto('workflows')}
+        />
+      </div>
+
+      <div className="grid-2">
+        <Card
+          title="伏笔风险"
+          subtitle="逾期会在写作上下文里标红，3 章内到期的会提前提醒"
+          actions={<button type="button" className="btn btn-sm btn-ghost" onClick={() => goto('foreshadowing')}>管理伏笔</button>}
+        >
+          {overdue.length === 0 && dueSoon.length === 0 ? (
+            <div className="small muted">没有逾期或临期的伏笔。</div>
+          ) : (
+            <div className="stack-sm">
+              {overdue.length > 0 && (
+                <div className="stack-sm">
+                  <span className="tiny" style={{ color: 'var(--danger)' }}>逾期 {overdue.length} 条</span>
+                  {overdue.slice(0, 6).map(item => {
+                    const deadline = deadlineChapterNo(item)
+                    return (
+                      <div key={item.id} className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                        <span className="small" style={{ color: '#f0a49e' }}>{truncate(item.name, 26)}</span>
+                        <span className="row-wrap">
+                          <Badge tone="danger" dot>逾期</Badge>
+                          <span className="tiny muted nowrap">
+                            {deadline !== null ? `最晚第 ${deadline} 章 · 已到第 ${progress.currentChapterNo} 章` : '未设最晚回收章'}
+                          </span>
+                        </span>
+                      </div>
+                    )
+                  })}
+                  {overdue.length > 6 && <span className="tiny muted">还有 {overdue.length - 6} 条未显示。</span>}
+                </div>
+              )}
+              {dueSoon.length > 0 && (
+                <div className="stack-sm">
+                  <span className="tiny" style={{ color: 'var(--warn)' }}>3 章内到期 {dueSoon.length} 条</span>
+                  {dueSoon.slice(0, 6).map(item => {
+                    const deadline = deadlineChapterNo(item)
+                    return (
+                      <div key={item.id} className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                        <span className="small dim">{truncate(item.name, 26)}</span>
+                        <span className="row-wrap">
+                          <Badge tone="warn" dot>临期</Badge>
+                          <span className="tiny muted nowrap">
+                            {deadline !== null ? `最晚第 ${deadline} 章 · 还差 ${Math.max(0, deadline - progress.currentChapterNo)} 章` : '未设最晚回收章'}
+                          </span>
+                        </span>
+                      </div>
+                    )
+                  })}
+                  {dueSoon.length > 6 && <span className="tiny muted">还有 {dueSoon.length - 6} 条未显示。</span>}
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+
+        <Card title="卡住的地方" subtitle="剧情线不推进、章节等你拍板">
+          <div className="stack-sm">
+            <div className="row-wrap" style={{ justifyContent: 'space-between' }}>
+              <span className="field-label">停滞剧情线</span>
+              <span className="tiny muted">{stalledThreads.length} 条</span>
+            </div>
+            {stalledThreads.length === 0 ? (
+              <div className="small muted">剧情线都在推进。</div>
+            ) : (
+              stalledThreads.slice(0, 5).map(thread => (
+                <div key={thread.id} className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                  <span className="small dim truncate">{truncate(thread.name, 26)}</span>
+                  <Badge tone="warn">未推进</Badge>
+                </div>
+              ))
+            )}
+
+            <div className="divider" style={{ margin: '6px 0' }} />
+
+            <div className="row-wrap" style={{ justifyContent: 'space-between' }}>
+              <span className="field-label">等你拍板的章节</span>
+              <span className="tiny muted">{needsDecisionChapters.length} 章</span>
+            </div>
+            {needsDecisionChapters.length === 0 ? (
+              <div className="small muted">没有卡在作者决策的章节。</div>
+            ) : (
+              needsDecisionChapters.slice(0, 5).map(chapter => (
+                <button
+                  key={chapter.id}
+                  type="button"
+                  className="row-btn row-wrap"
+                  style={{ justifyContent: 'space-between', width: '100%' }}
+                  onClick={() => openChapter(chapter.id)}
+                >
+                  <span className="small dim truncate">第 {chapter.chapterNo} 章 · {truncate(chapter.title, 22)}</span>
+                  <StatusBadge status={chapter.status} />
+                </button>
+              ))
+            )}
+            {unreviewedChapters.length > 0 && (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                另有 {unreviewedChapters.length} 章还没有审查过的正文草稿。
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid-2">
+        <Card title="最近审计" subtitle="最近 10 条正式资料变更（定稿 / 应用提议 / 手动修改）">
+          {recentAudit.length === 0 ? (
+            <div className="small muted">还没有审计记录。</div>
+          ) : (
+            <div className="stack-sm">
+              {recentAudit.slice(0, 10).map(entry => (
+                <div
+                  key={entry.id}
+                  className="row-wrap"
+                  style={{ justifyContent: 'space-between', borderBottom: '1px solid var(--line-soft)', paddingBottom: 5 }}
+                >
+                  <span className="small dim">
+                    {auditText(entry.action)}
+                    <span className="mono tiny muted" style={{ marginLeft: 8 }} title={entry.action}>{entry.entityId.slice(0, 8)}</span>
+                  </span>
+                  <span className="tiny muted nowrap" title={formatTime(entry.createdAt)}>{relativeTime(entry.createdAt)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <Card
+          title="工作流状态"
+          subtitle={`运行中 ${workflows.running} · 失败 ${workflows.failed}`}
+          actions={<button type="button" className="btn btn-sm btn-ghost" onClick={() => goto('workflows')}>查看全部</button>}
+        >
+          {workflows.recent.length === 0 ? (
+            <div className="small muted">还没有工作流记录。</div>
+          ) : (
+            <div className="stack-sm">
+              {workflows.recent.slice(0, 8).map(run => (
+                <div key={run.id} className="row-wrap" style={{ justifyContent: 'space-between' }}>
+                  <span className="small dim">{label(run.taskType)}</span>
+                  <span className="row-wrap">
+                    <StatusBadge status={run.state} />
+                    <span className="tiny muted nowrap">{relativeTime(run.updatedAt)}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  )
+}
+
 export function DashboardPage({ projectId, navigate }: PageProps) {
   const overview = useResource(() => api.getOverview(projectId), [projectId])
+  const control = useResource(() => api.getControlCenter(projectId), [projectId])
   const threads = useResource(() => api.listThreads(projectId), [projectId])
   const relations = useResource(() => api.listRelations(projectId), [projectId])
   const batches = useResource(() => api.listIngestBatches(projectId), [projectId])
@@ -127,6 +381,21 @@ export function DashboardPage({ projectId, navigate }: PageProps) {
         </div>
         <button type="button" className="btn" onClick={overview.reload}>刷新</button>
       </div>
+
+      <SectionTitle
+        title="创作控制台"
+        hint="写到哪、哪里卡住、最近发生了什么"
+        actions={<button type="button" className="btn btn-sm btn-ghost" disabled={control.loading} onClick={control.reload}>刷新控制台</button>}
+      />
+      {control.loading && !control.data ? (
+        <Loading text="正在汇总控制台…" />
+      ) : control.error ? (
+        <ErrorBox error={control.error} onRetry={control.reload} />
+      ) : control.data ? (
+        <ControlCenterBlock control={control.data} goto={goto} openChapter={openChapter} />
+      ) : (
+        <Empty title="控制台暂无数据" hint="控制台接口没有返回内容。" />
+      )}
 
       <div className="stat-grid">
         <Stat label="章节" value={counts.chapters} hint={`已定稿 ${counts.finalizedChapters}`} />

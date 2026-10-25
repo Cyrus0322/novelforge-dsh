@@ -1634,4 +1634,147 @@ ${row.description}`)
     return { ok: true }
   }
 
+
+  // ── 影响分析：改一个关键事件，会影响哪些后续内容 ─────────────
+  analyzeEventImpact(projectId: string, eventId: string): {
+    event: StoryEvent
+    chapterNo: number | null
+    keywords: string[]
+    chapters: Array<{ chapter: Chapter; hits: string[] }>
+    foreshadowing: Foreshadowing[]
+    threads: PlotThread[]
+    knowledge: KnowledgeView[]
+    total: number
+  } {
+    const event = this.db.select().from(events).where(eq(events.id, eventId)).get()
+    if (!event || event.projectId !== projectId) throw new NovelForgeError('NOT_FOUND', `事件不存在：${eventId}`)
+    const chapter = event.chapterId ? this.getChapter(event.chapterId) : null
+    const chapterNo = chapter ? chapter.chapterNo : null
+
+    const rawKeywords = new Set<string>()
+    for (const token of event.summary.split(/[\s，。、；：！？（）()「」“”"'’·…—]+/)) {
+      const trimmed = token.trim()
+      if (trimmed.length >= 2) rawKeywords.add(trimmed)
+    }
+    for (const participantId of parseJson<string[]>(event.participantsJson, [])) {
+      const entity = this.db.select().from(entities).where(eq(entities.id, participantId)).get()
+      if (entity) rawKeywords.add(entity.name)
+    }
+    const keywords = [...rawKeywords].slice(0, 12)
+
+    const laterChapters = this.listChapters(projectId)
+      .filter(item => chapterNo === null || item.chapterNo > chapterNo)
+      .filter(item => item.status !== 'finalized')
+    const chapterHits: Array<{ chapter: Chapter; hits: string[] }> = []
+    for (const item of laterChapters) {
+      const text = [item.title, item.summary, item.outlineId ? this.getOutline(item.outlineId).content : ''].join('\n')
+      const hits = keywords.filter(keyword => text.includes(keyword))
+      if (hits.length) chapterHits.push({ chapter: item, hits })
+    }
+
+    const relatedForeshadowing = this.listForeshadowing(projectId).filter(item => {
+      if ((item.status !== 'open' && item.status !== 'reinforced') || !item.plantChapterId) return false
+      const plant = this.getChapter(item.plantChapterId)
+      return chapterNo === null || plant.chapterNo >= chapterNo
+    })
+
+    const relatedThreads = this.listPlotThreads(projectId).filter(item => {
+      if (item.status === 'resolved' || item.status === 'abandoned') return false
+      if (!item.currentChapterId) return true
+      const current = this.getChapter(item.currentChapterId)
+      return chapterNo === null || current.chapterNo >= chapterNo
+    })
+
+    const participantIds = new Set(parseJson<string[]>(event.participantsJson, []))
+    const relatedKnowledge = this.listKnowledge(projectId).filter(fact =>
+      fact.knowers.some(knower => participantIds.has(knower.entityId)))
+
+    return {
+      event,
+      chapterNo,
+      keywords,
+      chapters: chapterHits.slice(0, 30),
+      foreshadowing: relatedForeshadowing.slice(0, 30),
+      threads: relatedThreads.slice(0, 20),
+      knowledge: relatedKnowledge.slice(0, 30),
+      total: chapterHits.length + relatedForeshadowing.length + relatedThreads.length + relatedKnowledge.length,
+    }
+  }
+
+  // ── 创作控制台：现在写到哪、哪里卡住、最近发生了什么 ─────────
+  getControlCenter(projectId: string): {
+    progress: {
+      currentChapterNo: number
+      finalizedCount: number
+      totalChapters: number
+      totalWords: number
+      finalizedWords: number
+      targetChapters: number
+    }
+    overdue: Foreshadowing[]
+    dueSoon: Foreshadowing[]
+    stalledThreads: PlotThread[]
+    needsDecisionChapters: Chapter[]
+    unreviewedChapters: Chapter[]
+    pendingProposals: number
+    recentAudit: AuditEntry[]
+    workflows: { running: number; failed: number; recent: WorkflowRun[] }
+  } {
+    const project = this.getProject(projectId)
+    const chapters = this.listChapters(projectId)
+    const summaries = this.listChapterSummaries(projectId)
+    const totalWords = summaries.reduce((sum, item) => sum + (item.latest?.words ?? 0), 0)
+    const finalizedWords = summaries
+      .filter(item => item.chapter.status === 'finalized')
+      .reduce((sum, item) => sum + (item.latest?.words ?? 0), 0)
+    const finalized = chapters.filter(item => item.status === 'finalized')
+    const currentChapterNo = finalized.length ? Math.max(...finalized.map(item => item.chapterNo)) : 0
+
+    const openForeshadowing = this.listForeshadowing(projectId)
+      .filter(item => item.status === 'open' || item.status === 'reinforced')
+    const overdue = openForeshadowing.filter(item =>
+      item.deadlineChapterId !== null && item.deadlineChapterId > 0 && item.deadlineChapterId <= currentChapterNo)
+    const dueSoon = openForeshadowing.filter(item =>
+      item.deadlineChapterId !== null && item.deadlineChapterId > currentChapterNo
+      && item.deadlineChapterId <= currentChapterNo + 3)
+
+    const stalledThreads = this.listPlotThreads(projectId).filter(item => {
+      if (item.status === 'resolved' || item.status === 'abandoned') return false
+      if (!item.currentChapterId) return true
+      const current = this.getChapter(item.currentChapterId)
+      return currentChapterNo - current.chapterNo >= 5
+    })
+
+    const needsDecisionChapters = chapters.filter(item =>
+      item.status === 'needs_author_decision' || item.status === 'awaiting_approval')
+    const unreviewedChapters = summaries
+      .filter(item => item.chapter.status !== 'finalized'
+        && (item.latest === null || item.latest.status === 'draft'))
+      .map(item => item.chapter)
+
+    const workflows = this.listWorkflowRuns(projectId)
+    return {
+      progress: {
+        currentChapterNo,
+        finalizedCount: finalized.length,
+        totalChapters: chapters.length,
+        totalWords,
+        finalizedWords,
+        targetChapters: project.targetChapters,
+      },
+      overdue,
+      dueSoon,
+      stalledThreads,
+      needsDecisionChapters,
+      unreviewedChapters,
+      pendingProposals: this.listProposals(projectId, 'pending').length,
+      recentAudit: this.listAuditEntries(projectId, 10),
+      workflows: {
+        running: workflows.filter(run => run.state === 'running').length,
+        failed: workflows.filter(run => run.state === 'failed').length,
+        recent: workflows.slice(0, 8),
+      },
+    }
+  }
+
 }
