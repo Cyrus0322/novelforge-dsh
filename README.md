@@ -2,7 +2,7 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.4.0`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.4.2`。
 
 0.3.0 起提供两层可视化界面：**DSH 内嵌面板**（在 Web GUI 侧边栏点「小说」即可查正文、人物、时间线、伏笔、全局搜索）与**完整本地工作台 Studio**（12 个页面，可编辑、可定稿、可导出）。两层共用同一份 SQLite 数据，不用 AI 也能管理与写作。
 GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>

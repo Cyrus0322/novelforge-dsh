@@ -1,4 +1,6 @@
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { drizzle } from './drizzle/driver.js'
+// 仅类型导入：运行时完全不依赖 better-sqlite3（它是可选 peer），只是复用 drizzle 的数据库类型。
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import * as schema from './schema.js'
@@ -6,7 +8,7 @@ import { MIGRATION_1 } from './migrations.js'
 import { openSqlite } from './sqlite.js'
 import type { SqliteDatabase } from './sqlite.js'
 
-export type NovelDatabase = ReturnType<typeof drizzle<typeof schema>>
+export type NovelDatabase = BetterSQLite3Database<typeof schema>
 
 export interface DatabaseHandle {
   sqlite: SqliteDatabase
@@ -32,8 +34,9 @@ export function openDatabase(path: string): DatabaseHandle {
       sqlite.pragma('user_version = 1')
     })()
   }
-  // drizzle 的 better-sqlite3 驱动只按结构化契约使用句柄（prepare/run/raw/all/get/transaction），
-  // 与底层是 node:sqlite 还是 better-sqlite3 无关，故此处做一次结构性类型转换。
-  const db = drizzle(sqlite as never, { schema }) as NovelDatabase
+  // 本地化的 drizzle 同步驱动（src/database/drizzle/）只按结构化契约使用句柄
+  // （prepare/run/raw/all/get/transaction），因此 node:sqlite 与 better-sqlite3 句柄都能直接喂进去；
+  // 这样发布到 npm 后即使完全没装 better-sqlite3（可选 peer）也能正常打开数据库。
+  const db = drizzle(sqlite as never, { schema }) as unknown as NovelDatabase
   return { sqlite, db, close: () => sqlite.close() }
 }
