@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "NovelForge 小说工作台",
-    "description": "基于持久化知识库、人工确认和版本管理的长篇小说规划、写作、审查与修订工具。"
+    "description": "基于持久化知识库、人工确认和版本管理的长篇小说规划、写作、审查与修订工具，附带本地可视化工作台（novelforge studio）。"
   }
 }

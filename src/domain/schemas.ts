@@ -82,7 +82,10 @@ export const changePayloadSchema = z.object({
   description: z.string().optional(),
   plantChapterId: z.string().nullable().optional(),
   payoffChapterId: z.string().nullable().optional(),
-}).refine(value => Object.keys(value).length > 0, '变更 payload 不能为空。')
+}).refine(
+  value => Boolean(value.name?.trim() || value.summary?.trim() || value.description?.trim() || value.eventTime?.trim()),
+  '变更 payload 至少需要 name / summary / description / eventTime 之一，不能是空对象。',
+)
 
 export const writingResultSchema = z.object({
   content: z.string().min(1),

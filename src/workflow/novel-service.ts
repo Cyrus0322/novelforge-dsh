@@ -173,13 +173,13 @@ export class NovelService {
     }, { revisionId, issueIds })
   }
 
-  finalizeChapter(revisionId: string, approved: boolean, approvedChangeIds: string[] = []): Chapter {
+  finalizeChapter(revisionId: string, approved: boolean, approvedChangeIds: string[] = [], allowUnreviewed = false): Chapter {
     const revision = this.store.getRevision(revisionId)
     const latest = this.store.getLatestRevision(revision.chapterId)
     if (latest?.id !== revisionId) {
       throw new NovelForgeError('CONFLICT', `只能定稿最新版本 ${latest?.id ?? '无'}；旧版本可比较或回滚为新草稿。`)
     }
-    return this.store.finalizeChapter(revisionId, approved, approvedChangeIds)
+    return this.store.finalizeChapter(revisionId, approved, approvedChangeIds, allowUnreviewed)
   }
 
   rollbackRevision(revisionId: string): ChapterRevision {

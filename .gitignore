@@ -7,3 +7,5 @@ data/*.sqlite
 coverage/
 *.tgz
 .workbuddy/
+.smoke/
+.pnpm-install.log

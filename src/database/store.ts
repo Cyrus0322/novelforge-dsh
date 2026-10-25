@@ -17,6 +17,7 @@ import {
 } from './schema.js'
 import type { NovelBlueprint, OutlinePlan, ReviewResult } from '../domain/schemas.js'
 import { changePayloadSchema } from '../domain/schemas.js'
+import { z } from 'zod'
 import { NovelForgeError, requireNonEmpty } from '../shared/errors.js'
 import { id, now } from '../shared/id.js'
 import { parseJson } from '../shared/json.js'
@@ -32,6 +33,38 @@ export type ReviewRun = typeof reviewRuns.$inferSelect
 export type ReviewIssue = typeof reviewIssues.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
 export type ChangeProposal = typeof changeProposals.$inferSelect
+export type AuditEntry = typeof auditLog.$inferSelect
+
+/** 正文版本来源：模型生成（draft/continue/rewrite/revise）与人工撰写/回滚都只追加不覆盖。 */
+export type RevisionKind = 'draft' | 'continue' | 'rewrite' | 'revise' | 'rollback' | 'manual'
+
+/** 章节列表 + 最新版本摘要，供工作台的章节列表与总览使用。 */
+export interface ChapterSummary {
+  chapter: Chapter
+  revisionCount: number
+  latest: { id: string; revisionNo: number; status: string; kind: string; words: number; createdAt: string } | null
+}
+
+export interface ProjectOverview {
+  project: Project
+  counts: {
+    chapters: number
+    finalizedChapters: number
+    entities: number
+    events: number
+    foreshadowingOpen: number
+    pendingProposals: number
+    openIssues: number
+    revisions: number
+  }
+  currentChapter: Chapter | null
+  openIssues: Array<ReviewIssue & { chapterId: string; chapterNo: number; chapterTitle: string }>
+  openForeshadowing: Foreshadowing[]
+  pendingProposals: ChangeProposal[]
+  recentWorkflows: WorkflowRun[]
+  recentRevisions: ChapterRevision[]
+  lastFinalized: { chapter: Chapter; revision: ChapterRevision } | null
+}
 
 export interface ProjectInput {
   title: string
@@ -266,7 +299,7 @@ export class NovelStore {
     return rows
   }
 
-  createRevision(chapterId: string, content: string, kind: 'draft' | 'continue' | 'rewrite' | 'revise' | 'rollback'): ChapterRevision {
+  createRevision(chapterId: string, content: string, kind: RevisionKind): ChapterRevision {
     const chapter = this.getChapter(chapterId)
     const normalized = requireNonEmpty(content, '正文')
     return this.db.transaction(() => {
@@ -277,7 +310,8 @@ export class NovelStore {
       }
       this.db.insert(chapterRevisions).values(row).run()
       this.db.update(chapters).set({
-        status: kind === 'revise' || kind === 'rewrite' ? 'revising' : 'draft_generated',
+        status: kind === 'revise' || kind === 'rewrite' ? 'revising'
+          : kind === 'manual' ? 'manual_draft' : 'draft_generated',
         version: chapter.version + 1, updatedAt: now(),
       }).where(eq(chapters.id, chapterId)).run()
       this.index(row.id, chapter.projectId, 'chapter', chapterId, row.status, row.content)
@@ -360,7 +394,16 @@ export class NovelStore {
 
   proposeChange(input: ProposalInput): ChangeProposal {
     this.getProject(input.projectId)
-    const payload = changePayloadSchema.parse(input.payload)
+    let payload: ReturnType<typeof changePayloadSchema.parse>
+    try {
+      payload = changePayloadSchema.parse(input.payload)
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const detail = error.issues.map(issue => `${issue.path.join('.') || 'payload'}：${issue.message}`).join('；')
+        throw new NovelForgeError('INVALID_INPUT', `变更 payload 不合法：${detail}`)
+      }
+      throw error
+    }
     if (input.operation === 'update' && !input.targetId) {
       throw new NovelForgeError('INVALID_INPUT', '更新提议必须提供 targetId。')
     }
@@ -453,19 +496,26 @@ export class NovelStore {
     })
   }
 
-  finalizeChapter(revisionId: string, approved: boolean, approvedChangeIds: string[]): Chapter {
+  /**
+   * 定稿：只有作者显式批准才能移动章节的正式版本指针。
+   * `allowUnreviewed` 仅由「人工工作台」使用（作者本人逐字读过草稿），
+   * DSH 工具路径永不传 true，从而保持「模型必须走审查」的硬约束。
+   */
+  finalizeChapter(revisionId: string, approved: boolean, approvedChangeIds: string[], allowUnreviewed = false): Chapter {
     if (!approved) throw new NovelForgeError('APPROVAL_REQUIRED', '未获得用户批准：定稿必须显式传入 approved: true，章节仍为草稿状态。')
     const revision = this.getRevision(revisionId)
     const chapter = this.getChapter(revision.chapterId)
     const review = this.getLatestReview(revisionId)
-    if (!review) throw new NovelForgeError('WORKFLOW_ERROR', '该版本尚未审查，不能定稿。')
-    const blockers = this.listReviewIssues(review.id).filter(issue => issue.resolutionStatus === 'open' && issue.severity !== 'minor')
+    if (!review && !allowUnreviewed) throw new NovelForgeError('WORKFLOW_ERROR', '该版本尚未审查，不能定稿。')
+    const blockers = review
+      ? this.listReviewIssues(review.id).filter(issue => issue.resolutionStatus === 'open' && issue.severity !== 'minor')
+      : []
     if (blockers.length) {
       throw new NovelForgeError('WORKFLOW_ERROR', `仍有 ${blockers.length} 个未解决的 major/critical 审查问题，不能定稿。`, { issueIds: blockers.map(issue => issue.id) })
     }
     return this.db.transaction(() => {
       const timestamp = now()
-      this.db.update(chapterRevisions).set({ status: 'finalized', summary: revision.summary || review.summary })
+      this.db.update(chapterRevisions).set({ status: 'finalized', summary: revision.summary || review?.summary || '' })
         .where(eq(chapterRevisions.id, revisionId)).run()
       this.db.update(chapters).set({
         currentRevisionId: revisionId, status: 'finalized', version: chapter.version + 1, updatedAt: timestamp,
@@ -476,7 +526,7 @@ export class NovelStore {
         if (proposal.projectId !== chapter.projectId) throw new NovelForgeError('INVALID_INPUT', '定稿附带的变更提议不属于同一小说项目。')
         this.applyProposalTx(proposal)
       }
-      this.audit(chapter.projectId, 'chapter.finalize', chapter.id, chapter, { ...chapter, currentRevisionId: revisionId, status: 'finalized' })
+      this.audit(chapter.projectId, allowUnreviewed && !review ? 'chapter.finalize_manual' : 'chapter.finalize', chapter.id, chapter, { ...chapter, currentRevisionId: revisionId, status: 'finalized' })
       return this.getChapter(chapter.id)
     })
   }
@@ -543,6 +593,381 @@ export class NovelStore {
         if (row.summary.includes(normalized)) rows.push({ recordId: row.id, recordType: 'event', sourceId: row.chapterId ?? row.id, status: row.status, snippet: row.summary.slice(0, 600) })
       }
     }
+    if (!types.length || types.includes('foreshadowing')) {
+      for (const row of this.listForeshadowing(projectId)) {
+        const text = `${row.name}
+${row.description}`
+        if (text.includes(normalized)) rows.push({ recordId: row.id, recordType: 'foreshadowing', sourceId: row.plantChapterId ?? row.id, status: row.status, snippet: text.slice(0, 600) })
+      }
+    }
     return rows.slice(0, safeLimit)
+  }
+
+  // ── 以下是人工工作台（Studio）使用的方法：作者本人可以直接编辑资料，
+  //    但所有变更同样写审计日志，并遵循乐观版本检查，绝不静默覆盖。
+
+  updateProject(projectId: string, patch: {
+    title?: string | undefined
+    genre?: string | undefined
+    premise?: string | undefined
+    styleGuide?: string | undefined
+    status?: string | undefined
+  }, expectedVersion?: number): Project {
+    const current = this.getProject(projectId)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `项目版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      title: patch.title === undefined ? current.title : requireNonEmpty(patch.title, 'title'),
+      genre: patch.genre === undefined ? current.genre : requireNonEmpty(patch.genre, 'genre'),
+      premise: patch.premise === undefined ? current.premise : patch.premise.trim(),
+      styleGuide: patch.styleGuide === undefined ? current.styleGuide : patch.styleGuide.trim(),
+      status: patch.status ?? current.status,
+      version: current.version + 1,
+      updatedAt: now(),
+    }
+    this.db.update(projects).set(next).where(and(eq(projects.id, projectId), eq(projects.version, current.version))).run()
+    this.audit(projectId, 'project.update', projectId, current, next)
+    return this.getProject(projectId)
+  }
+
+  updateEntity(entityId: string, patch: {
+    name?: string | undefined
+    summary?: string | undefined
+    kind?: string | undefined
+    attributes?: Record<string, unknown> | undefined
+    status?: string | undefined
+  }, expectedVersion?: number): Entity {
+    const current = this.getEntity(entityId)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `实体版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      name: patch.name === undefined ? current.name : requireNonEmpty(patch.name, 'name'),
+      kind: patch.kind ?? current.kind,
+      summary: patch.summary === undefined ? current.summary : patch.summary.trim(),
+      attributesJson: patch.attributes === undefined ? current.attributesJson : JSON.stringify(patch.attributes),
+      status: patch.status ?? current.status,
+      version: current.version + 1,
+      updatedAt: now(),
+    }
+    this.db.update(entities).set(next).where(and(eq(entities.id, entityId), eq(entities.version, current.version))).run()
+    this.index(entityId, current.projectId, next.kind, entityId, next.status, `${next.name}\n${next.summary}\n${next.attributesJson}`)
+    this.audit(current.projectId, 'entity.update', entityId, current, next)
+    return this.getEntity(entityId)
+  }
+
+  updateOutline(outlineId: string, patch: {
+    title?: string | undefined
+    content?: string | undefined
+    status?: string | undefined
+  }, expectedVersion?: number): Outline {
+    const current = this.getOutline(outlineId)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `大纲版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      title: patch.title === undefined ? current.title : requireNonEmpty(patch.title, 'title'),
+      content: patch.content === undefined ? current.content : patch.content,
+      status: patch.status ?? current.status,
+      version: current.version + 1,
+      updatedAt: now(),
+    }
+    this.db.update(outlines).set(next).where(and(eq(outlines.id, outlineId), eq(outlines.version, current.version))).run()
+    this.audit(current.projectId, 'outline.update', outlineId, current, next)
+    return this.getOutline(outlineId)
+  }
+
+  updateEvent(eventId: string, patch: {
+    summary?: string | undefined
+    eventTime?: string | undefined
+    status?: string | undefined
+    chapterId?: string | null | undefined
+  }, expectedVersion?: number): StoryEvent {
+    const current = this.db.select().from(events).where(eq(events.id, eventId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `事件不存在：${eventId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `事件版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      summary: patch.summary === undefined ? current.summary : requireNonEmpty(patch.summary, 'summary'),
+      eventTime: patch.eventTime === undefined ? current.eventTime : patch.eventTime,
+      status: patch.status ?? current.status,
+      chapterId: patch.chapterId === undefined ? current.chapterId : patch.chapterId,
+      version: current.version + 1,
+      updatedAt: now(),
+    }
+    this.db.update(events).set(next).where(and(eq(events.id, eventId), eq(events.version, current.version))).run()
+    this.index(eventId, current.projectId, 'event', next.chapterId ?? eventId, next.status, next.summary)
+    this.audit(current.projectId, 'event.update', eventId, current, next)
+    return this.db.select().from(events).where(eq(events.id, eventId)).get() as StoryEvent
+  }
+
+  updateForeshadowing(foreshadowingId: string, patch: {
+    name?: string | undefined
+    description?: string | undefined
+    status?: string | undefined
+    plantChapterId?: string | null | undefined
+    payoffChapterId?: string | null | undefined
+  }, expectedVersion?: number): Foreshadowing {
+    const current = this.db.select().from(foreshadowing).where(eq(foreshadowing.id, foreshadowingId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `伏笔不存在：${foreshadowingId}`)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `伏笔版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      name: patch.name === undefined ? current.name : requireNonEmpty(patch.name, 'name'),
+      description: patch.description === undefined ? current.description : patch.description,
+      status: patch.status ?? current.status,
+      plantChapterId: patch.plantChapterId === undefined ? current.plantChapterId : patch.plantChapterId,
+      payoffChapterId: patch.payoffChapterId === undefined ? current.payoffChapterId : patch.payoffChapterId,
+      version: current.version + 1,
+      updatedAt: now(),
+    }
+    this.db.update(foreshadowing).set(next).where(and(eq(foreshadowing.id, foreshadowingId), eq(foreshadowing.version, current.version))).run()
+    this.index(foreshadowingId, current.projectId, 'foreshadowing', next.plantChapterId ?? foreshadowingId, next.status, `${next.name}\n${next.description}`)
+    this.audit(current.projectId, 'foreshadowing.update', foreshadowingId, current, next)
+    return this.db.select().from(foreshadowing).where(eq(foreshadowing.id, foreshadowingId)).get() as Foreshadowing
+  }
+
+  rejectProposal(proposalId: string): ChangeProposal {
+    const proposal = this.getProposal(proposalId)
+    if (proposal.status !== 'pending') throw new NovelForgeError('CONFLICT', `提议 ${proposalId} 当前状态为 ${proposal.status}，不能驳回。`)
+    this.db.update(changeProposals).set({ status: 'rejected', appliedAt: now() }).where(eq(changeProposals.id, proposalId)).run()
+    this.audit(proposal.projectId, 'proposal.reject', proposalId, proposal, { ...proposal, status: 'rejected' })
+    return this.getProposal(proposalId)
+  }
+
+  updateIssueStatus(issueId: string, status: string): ReviewIssue {
+    const current = this.db.select().from(reviewIssues).where(eq(reviewIssues.id, issueId)).get()
+    if (!current) throw new NovelForgeError('NOT_FOUND', `审查问题不存在：${issueId}`)
+    this.db.update(reviewIssues).set({ resolutionStatus: status }).where(eq(reviewIssues.id, issueId)).run()
+    const run = this.getReviewRun(current.reviewRunId)
+    const chapter = this.getChapter(run.chapterId)
+    this.audit(chapter.projectId, 'issue.update', issueId, current, { ...current, resolutionStatus: status })
+    return this.db.select().from(reviewIssues).where(eq(reviewIssues.id, issueId)).get() as ReviewIssue
+  }
+
+  getProjectOverview(projectId: string): ProjectOverview {
+    const project = this.getProject(projectId)
+    const chapterRows = this.listChapters(projectId)
+    const totalRevisions = this.db.select({ count: sql<number>`count(*)` }).from(chapterRevisions)
+      .innerJoin(chapters, eq(chapters.id, chapterRevisions.chapterId))
+      .where(eq(chapters.projectId, projectId)).get()?.count ?? 0
+    const revisionRows = this.db.select().from(chapterRevisions)
+      .innerJoin(chapters, eq(chapters.id, chapterRevisions.chapterId))
+      .where(eq(chapters.projectId, projectId)).orderBy(desc(chapterRevisions.createdAt)).limit(12).all()
+      .map(row => row.chapter_revisions)
+    const openIssues = this.db.select({
+        id: reviewIssues.id, reviewRunId: reviewIssues.reviewRunId, category: reviewIssues.category,
+        severity: reviewIssues.severity, locationStart: reviewIssues.locationStart, locationEnd: reviewIssues.locationEnd,
+        issue: reviewIssues.issue, evidenceJson: reviewIssues.evidenceJson,
+        suggestedFix: reviewIssues.suggestedFix, resolutionStatus: reviewIssues.resolutionStatus,
+        chapterId: chapters.id, chapterNo: chapters.chapterNo, chapterTitle: chapters.title,
+      }).from(reviewIssues)
+      .innerJoin(reviewRuns, eq(reviewRuns.id, reviewIssues.reviewRunId))
+      .innerJoin(chapters, eq(chapters.id, reviewRuns.chapterId))
+      .where(and(eq(chapters.projectId, projectId), eq(reviewIssues.resolutionStatus, 'open')))
+      .all().filter(row => row.severity !== 'minor')
+    const pendingProposals = this.listProposals(projectId, 'pending')
+    const openForeshadowing = this.listForeshadowing(projectId).filter(row => row.status === 'open' || row.status === 'reinforced')
+    const finalList = this.listFinalChapters(projectId)
+    const currentChapter = chapterRows.find(chapter => chapter.status !== 'finalized') ?? null
+    return {
+      project,
+      counts: {
+        chapters: chapterRows.length,
+        finalizedChapters: finalList.length,
+        entities: this.listEntities(projectId).length,
+        events: this.listEvents(projectId).length,
+        foreshadowingOpen: openForeshadowing.length,
+        pendingProposals: pendingProposals.length,
+        openIssues: openIssues.length,
+        revisions: totalRevisions,
+      },
+      currentChapter,
+      openIssues,
+      openForeshadowing,
+      pendingProposals,
+      recentWorkflows: this.listWorkflowRuns(projectId).slice(0, 8),
+      recentRevisions: revisionRows,
+      lastFinalized: finalList.at(-1) ?? null,
+    }
+  }
+
+  getChapterDetail(chapterId: string): {
+    chapter: Chapter
+    outline: Outline | null
+    revisions: ChapterRevision[]
+    latestRevision: ChapterRevision | null
+    latestReview: { run: ReviewRun; issues: ReviewIssue[] } | null
+  } {
+    const chapter = this.getChapter(chapterId)
+    const outline = chapter.outlineId ? this.getOutline(chapter.outlineId) : null
+    const revisions = this.listRevisions(chapterId)
+    const latestRevision = revisions[0] ?? null
+    const run = latestRevision ? this.getLatestReview(latestRevision.id) : undefined
+    return {
+      chapter,
+      outline,
+      revisions,
+      latestRevision,
+      latestReview: run ? { run, issues: this.listReviewIssues(run.id) } : null,
+    }
+  }
+
+  listReviewRuns(projectId: string): Array<{ run: ReviewRun; chapter: { id: string; chapterNo: number; title: string }; issueCount: number; openCount: number }> {
+    const rows = this.db.select({ run: reviewRuns, chapter: chapters }).from(reviewRuns)
+      .innerJoin(chapters, eq(chapters.id, reviewRuns.chapterId))
+      .where(eq(chapters.projectId, projectId))
+      .orderBy(desc(reviewRuns.createdAt)).all()
+    return rows.map(({ run, chapter }) => {
+      const issues = this.listReviewIssues(run.id)
+      return {
+        run,
+        chapter: { id: chapter.id, chapterNo: chapter.chapterNo, title: chapter.title },
+        issueCount: issues.length,
+        openCount: issues.filter(issue => issue.resolutionStatus === 'open').length,
+      }
+    })
+  }
+
+  /** 作者手动新增事件（工作台不需要模型也能管理时间线）。 */
+  createEvent(input: {
+    projectId: string
+    summary: string
+    eventTime?: string | undefined
+    status?: string | undefined
+    chapterId?: string | undefined
+  }): StoryEvent {
+    this.getProject(input.projectId)
+    const timestamp = now()
+    const row: StoryEvent = {
+      id: id('event'), projectId: input.projectId, chapterId: input.chapterId ?? null,
+      eventTime: input.eventTime?.trim() ?? '', summary: requireNonEmpty(input.summary, 'summary'),
+      status: input.status ?? 'confirmed', sourceRevisionId: null, version: 1,
+      createdAt: timestamp, updatedAt: timestamp,
+    }
+    this.db.insert(events).values(row).run()
+    this.index(row.id, row.projectId, 'event', row.chapterId ?? row.id, row.status, row.summary)
+    this.audit(row.projectId, 'event.create', row.id, undefined, row)
+    return row
+  }
+
+  /** 作者手动新增伏笔。 */
+  createForeshadowing(input: {
+    projectId: string
+    name: string
+    description?: string | undefined
+    status?: string | undefined
+    plantChapterId?: string | undefined
+    payoffChapterId?: string | undefined
+  }): Foreshadowing {
+    this.getProject(input.projectId)
+    const timestamp = now()
+    const row: Foreshadowing = {
+      id: id('foreshadowing'), projectId: input.projectId, name: requireNonEmpty(input.name, 'name'),
+      description: input.description?.trim() ?? '', plantChapterId: input.plantChapterId ?? null,
+      payoffChapterId: input.payoffChapterId ?? null, status: input.status ?? 'open', version: 1,
+      createdAt: timestamp, updatedAt: timestamp,
+    }
+    this.db.insert(foreshadowing).values(row).run()
+    this.index(row.id, row.projectId, 'foreshadowing', row.plantChapterId ?? row.id, row.status, `${row.name}
+${row.description}`)
+    this.audit(row.projectId, 'foreshadowing.create', row.id, undefined, row)
+    return row
+  }
+
+  /** 作者手动新增章节：同时建一条章级大纲，保证工作台里始终有可编辑的章节目标。 */
+  createChapter(projectId: string, input: { title: string; chapterNo?: number | undefined }): { chapter: Chapter; outline: Outline } {
+    this.getProject(projectId)
+    return this.db.transaction(() => {
+      const latest = this.db.select({ chapterNo: chapters.chapterNo }).from(chapters)
+        .where(eq(chapters.projectId, projectId)).orderBy(desc(chapters.chapterNo)).limit(1).get()
+      let chapterNo = input.chapterNo ?? (latest?.chapterNo ?? 0) + 1
+      if (!Number.isInteger(chapterNo) || chapterNo < 1) chapterNo = (latest?.chapterNo ?? 0) + 1
+      while (this.db.select({ id: chapters.id }).from(chapters)
+        .where(and(eq(chapters.projectId, projectId), eq(chapters.chapterNo, chapterNo))).get()) {
+        chapterNo += 1
+      }
+      const timestamp = now()
+      const title = requireNonEmpty(input.title, '章节标题')
+      const outlineRow: Outline = {
+        id: id('outline'), projectId, parentId: null, level: 'chapter', chapterNo,
+        title, content: JSON.stringify({ summary: '', goal: '', conflict: '', hook: '' }),
+        status: 'planned', version: 1, createdAt: timestamp, updatedAt: timestamp,
+      }
+      this.db.insert(outlines).values(outlineRow).run()
+      const chapterRow: Chapter = {
+        id: id('chapter'), projectId, outlineId: outlineRow.id, chapterNo,
+        title, status: 'planned', currentRevisionId: null, version: 1,
+        createdAt: timestamp, updatedAt: timestamp,
+      }
+      this.db.insert(chapters).values(chapterRow).run()
+      this.audit(projectId, 'chapter.create', chapterRow.id, undefined, chapterRow)
+      return { chapter: chapterRow, outline: outlineRow }
+    })
+  }
+
+  updateChapter(chapterId: string, patch: { title?: string | undefined; status?: string | undefined }, expectedVersion?: number): Chapter {
+    const current = this.getChapter(chapterId)
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new NovelForgeError('CONFLICT', `章节版本已变化：期望 ${expectedVersion}，实际 ${current.version}。`)
+    }
+    const next = {
+      title: patch.title === undefined ? current.title : requireNonEmpty(patch.title, '章节标题'),
+      status: patch.status ?? current.status,
+      version: current.version + 1,
+      updatedAt: now(),
+    }
+    this.db.update(chapters).set(next).where(and(eq(chapters.id, chapterId), eq(chapters.version, current.version))).run()
+    if (current.outlineId) {
+      const outline = this.getOutline(current.outlineId)
+      this.db.update(outlines).set({ title: next.title, version: outline.version + 1, updatedAt: now() })
+        .where(eq(outlines.id, current.outlineId)).run()
+    }
+    this.audit(current.projectId, 'chapter.update', chapterId, current, next)
+    return this.getChapter(chapterId)
+  }
+
+  listChapterSummaries(projectId: string): ChapterSummary[] {
+    const chapterRows = this.listChapters(projectId)
+    const revisionRows = this.db.select({
+      id: chapterRevisions.id, chapterId: chapterRevisions.chapterId, revisionNo: chapterRevisions.revisionNo,
+      status: chapterRevisions.status, kind: chapterRevisions.kind, createdAt: chapterRevisions.createdAt,
+    }).from(chapterRevisions).innerJoin(chapters, eq(chapters.id, chapterRevisions.chapterId))
+      .where(eq(chapters.projectId, projectId)).all()
+    const lengths = new Map<string, number>()
+    for (const row of this.handle.sqlite.prepare(
+      'SELECT r.id AS id, length(r.content) AS len FROM chapter_revisions r JOIN chapters c ON c.id = r.chapter_id WHERE c.project_id = ?',
+    ).all(projectId) as Array<{ id: string; len: number }>) {
+      lengths.set(row.id, row.len)
+    }
+    const grouped = new Map<string, typeof revisionRows>()
+    for (const row of revisionRows) {
+      const list = grouped.get(row.chapterId)
+      if (list) list.push(row)
+      else grouped.set(row.chapterId, [row])
+    }
+    return chapterRows.map(chapter => {
+      const list = (grouped.get(chapter.id) ?? []).slice().sort((a, b) => b.revisionNo - a.revisionNo)
+      const head = list[0]
+      return {
+        chapter,
+        revisionCount: list.length,
+        latest: head
+          ? {
+            id: head.id, revisionNo: head.revisionNo, status: head.status, kind: head.kind,
+            words: lengths.get(head.id) ?? 0, createdAt: head.createdAt,
+          }
+          : null,
+      }
+    })
+  }
+
+  listAuditEntries(projectId: string, limit = 50): AuditEntry[] {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)))
+    return this.db.select().from(auditLog).where(eq(auditLog.projectId, projectId))
+      .orderBy(desc(auditLog.createdAt)).limit(safeLimit).all()
   }
 }

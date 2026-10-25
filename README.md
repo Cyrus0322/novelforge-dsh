@@ -2,7 +2,9 @@
 
 面向长篇网文创作的 DeepSeek Harness（DSH）插件：拥有**持久化知识库、动态上下文、多维度审查、不可覆盖的正文版本和人工确认定稿**，而不是一个只会续写文字的聊天机器人。
 
-插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.2.1`。
+插件名：`novelforge`；npm 包名：`novelforge-dsh`；版本：`0.3.0`。
+
+0.3.0 起附带**可视化工作台 Studio**：本地网页版小说管理界面（项目总览 / 大纲 / 章节编辑器 / 人物与世界观 / 时间线 / 伏笔 / 审查报告 / 版本比较 / 待审批变更 / 工作流 / 审计与导出），不用 AI 也能管理和写作。
 GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.npmjs.com/package/novelforge-dsh>
 
 ---
@@ -29,23 +31,38 @@ GitHub：<https://github.com/Cyrus0322/novelforge-dsh> ｜ npm：<https://www.np
 novelforge-dsh/
 ├── package.json              # 插件清单；dsh.bundle.patch 指向 cordis.patch.yml
 ├── cordis.patch.yml          # 插件插入点、启用开关与默认配置
+├── pnpm-workspace.yaml       # 根包（插件）+ apps/studio（工作台前端）
 ├── tsconfig.json             # strict + NodeNext，构建到 dist/
 ├── vitest.config.ts
-├── .env.example              # DeepSeek 与 NovelForge 环境变量示例
+├── .env.example
 ├── locale/{zh,en}.json       # 插件描述本地化
 ├── src/
 │   ├── dsh-plugin/index.ts   # 【入口】Cordis 插件：name / inject / Config / apply
-│   ├── cli/index.ts          # 【入口】本地命令行
+│   ├── cli/index.ts          # 【入口】本地命令行（含 studio 子命令）
+│   ├── server/               # 【入口】工作台服务：REST API、静态托管、令牌与来源校验
 │   ├── domain/schemas.ts     # 蓝图、大纲、章节计划、审查结果的 Zod Schema
 │   ├── database/             # SQLite 建表、迁移、Repository（事务、审计、全文索引）
 │   ├── retrieval/context.ts  # 动态上下文包与 token 预算裁剪
 │   ├── workflow/             # novel-service.ts（编排）+ prompts.ts（提示词模板）
-│   ├── llm/                  # DeepSeek 客户端、重试、结构化输出解析
+│   ├── llm/                  # DSH 宿主模型适配、DeepSeek 直连回退、结构化输出
 │   └── shared/               # 配置、错误码、ID、JSON 工具
-├── docs/dsh-compatibility.md # 官方接口逐项核验记录
-├── tests/                    # 单元与集成测试（16 项）
+├── apps/studio/              # 可视化工作台（React 19 + Vite 8 + TypeScript，无 UI 库依赖）
+│   ├── index.html
+│   ├── vite.config.ts        # base './'，dev 时 /api 代理到 127.0.0.1:4319
+│   └── src/
+│       ├── app/              # App 外壳、hash 路由、页面 props 约定
+│       ├── pages/            # 12 个页面
+│       ├── components/ui.tsx # 设计系统基础组件
+│       ├── lib/              # api 客户端、类型、hooks、格式化
+│       └── styles.css        # 暗色「纸墨」设计系统
+├── docs/
+│   ├── dsh-compatibility.md  # 官方接口逐项核验记录
+│   └── studio-api.md         # 工作台 REST 契约
+├── tests/                    # 单元与集成测试（含真实 HTTP 服务测试）
 └── data/                     # SQLite 数据库默认位置（已在 .gitignore 中）
 ```
+
+分层边界：`domain` / `database` / `retrieval` / `workflow` / `server` 不依赖 DSH；只有 `dsh-plugin` 依赖 `ctx.tools`、`ctx.approval`、`ctx.llm`。工作台前端只通过 REST 访问领域服务，**永不直接读写 SQLite**。
 
 分层边界：`domain` / `database` / `retrieval` / `workflow` 不依赖 DSH，只有 `dsh-plugin` 依赖 `ctx.tools`、`ctx.approval`。
 
@@ -122,7 +139,34 @@ better_sqlite3_binary_host_mirror=https://registry.npmmirror.com/-/binary/better
 
 随后在会话中要求模型调用 `novel_list_projects` 或 `novel_search` 验证。
 
-### 3.3 独立 CLI（不依赖 DSH，便于调试）
+### 3.3 可视化工作台 Studio（本地网页，不依赖 DSH 会话）
+
+```sh
+pnpm run studio:build        # 构建前端到 apps/studio/dist
+pnpm run studio              # 起本地服务并自动打开 http://127.0.0.1:4319
+
+# 自定义端口 / 数据库 / 不自动开浏览器
+node dist/cli/index.js studio --port 4400 --db ./data/novelforge.db --no-open
+```
+
+页面：项目列表与新建 · 项目总览 · 大纲（卷/章两级可编辑）· 章节列表 · 章节工作台（正文编辑器 + 上下文包预览 + 版本历史 + 审查问题）· 人物与世界观 · 事件时间线 · 伏笔 · 审查报告 · 版本比较与回滚 · 待审批变更 · 工作流 · 项目设置/审计/搜索/导出。
+
+安全与边界：
+
+- 默认只监听 `127.0.0.1`；绑定非本机地址**必须**设置 `NOVELFORGE_STUDIO_TOKEN`，所有 `/api/*` 请求需带 `x-novelforge-token` 头（或 `?token=`）。
+- 只放行本机 Origin 的写请求；任何公网页面无法通过浏览器把你的小说库拖走。
+- 浏览器不接触 SQLite：所有读写在服务端经领域层完成，并写入 `audit_log`。
+- 人工写作：编辑器里写正文，保存即新建一个 `kind=manual` 版本，历史版本不覆盖。
+- 人工定稿：某一版没有模型审查记录时，作者可在工作台确认后定稿，审计记为 `chapter.finalize_manual`；DSH 工具路径**永远**要求先审查。
+
+前端单独调试（热更新，`/api` 自动代理到 4319）：
+
+```sh
+pnpm run studio            # 终端 A：后端 + 已构建页面
+pnpm run studio:dev        # 终端 B：Vite dev server（127.0.0.1:5273）
+```
+
+### 3.4 独立 CLI（不依赖 DSH，便于调试）
 
 ```sh
 pnpm install
@@ -263,20 +307,24 @@ pnpm run novel -- export --project <项目ID> --output out.md
 
 ```sh
 pnpm install
-pnpm run typecheck   # tsc --noEmit
-pnpm run test        # vitest run，16 项
-pnpm run build       # 输出到 dist/
+pnpm run typecheck   # 后端 tsc --noEmit + 工作台 tsc --noEmit
+pnpm run test        # vitest run（含真实 HTTP 服务测试）
+pnpm run build       # 后端输出到 dist/
+pnpm run build:all   # 后端 + 工作台前端（发布前用）
+pnpm run studio      # 启动工作台（需要先 studio:build）
 ```
 
-测试覆盖：重启后数据恢复；上下文预算与截断；短中文检索回退；正文版本只追加不覆盖；未批准不落正式数据；乐观版本冲突；违禁设定检测并阻断定稿；续写/改写/修订轮次上限；429 退避重试、401 不重试、结构异常修正重试；工具注册与审批失败 fail closed。
+测试覆盖（9 个文件 / 59 项，全部真实调用、无 mock 业务逻辑）：重启后数据恢复；上下文预算与截断；短中文检索回退；正文版本只追加不覆盖；未批准不落正式数据；乐观版本冲突；违禁设定检测并阻断定稿；续写/改写/修订轮次上限；429 退避重试、401 不重试、结构异常修正重试；工具注册与审批失败 fail closed。
+
+工作台新增覆盖（`tests/server.test.ts` + `tests/studio-store.test.ts`）：真实起 HTTP 服务测 48 个接口（含令牌三种传法、同源 CORS 与跨站 403、畸形编码 400、路径穿越回退、SPA 回退、`port:0`/端口回退下的同源写、AI 接口在无 Key 时一律 400 且零外网请求）；store 新增能力（人工编辑的乐观锁与审计、`kind=manual` 追加式版本、`allowUnreviewed` 人工定稿与 `chapter.finalize_manual` 审计、提议状态机、overview/detail/review-runs/audit 聚合、`counts.revisions` 不受预览窗口截断）。接口契约见 [`docs/studio-api.md`](docs/studio-api.md)。
 
 ---
 
 ## 10. 方案中未定义、按默认实现的细节
 
 1. **DSH 宿主版本**：官方要求 Node.js ≥24.9.0，本机 22.22.2，故 CLI 与测试独立验证，DSH 内验收列为环境前置条件。
-2. **可视化工作台**：方案中的 React 工作台本次**未实现**。官方客户端 UI 是 Host + Client/Slot 的独立扩展路径，不是普通工具插件的附属能力；在核验 Client Modules、Remote API 与 Slot 之前不做内嵌页面，也不宣称已嵌入。当前入口是 CLI 与 DSH 工具。
-3. **单包结构**：为降低工程开销，把方案的 pnpm workspace 多包合并为单包，但保留 `domain / database / retrieval / workflow / llm / dsh-plugin` 目录边界。
+2. **可视化工作台**：方案给了两条路线（DSH 内嵌 Slot / 独立本地网页）。本版按方案授权走**独立本地 Web UI**：`apps/studio` + `src/server`，通过受控 REST 连接领域服务，**不宣称已嵌入 DSH**。内嵌 DSH 客户端面板仍需要核验当前版本的 Client Modules 与 Slot 注册方式，属于后续阶段。
+3. **多包结构**：方案建议 `packages/domain|database|retrieval|workflow|llm|dsh-plugin` 多包。为降低工程开销并保持既有构建链路稳定，本版为「根包 + `apps/studio`」的 pnpm workspace：逻辑边界仍按目录保留，`apps/studio` 是独立包。
 4. **检索方案**：先用 SQLite FTS5（trigram）并保留 LIKE 子串回退，未引入向量数据库；中文短词（2–3 字）依赖回退保证可召回。
 5. **事实来源字段**：在 `entities`、`events` 等记录上使用 `sourceChapterId` / `sourceRevisionId`，未额外建立独立来源表。
 6. **自动修订轮次**：默认 3 轮，可配置；超出上限会暂停并把章节置为 `needs_author_decision`。

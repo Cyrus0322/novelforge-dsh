@@ -1,6 +1,6 @@
 {
   "name": "novelforge-dsh",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A persistent, human-approved long-form novel writing plugin for DeepSeek Harness",
   "author": "Cyrus0322",
   "license": "MIT",
@@ -42,6 +42,7 @@
   },
   "files": [
     "dist",
+    "apps/studio/dist",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
@@ -59,11 +60,16 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:all": "pnpm run build && pnpm run studio:build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm run studio:typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "novel": "tsx src/cli/index.ts",
-    "prepack": "pnpm run build",
+    "studio": "node dist/cli/index.js studio",
+    "studio:build": "pnpm --filter @novelforge/studio build",
+    "studio:dev": "pnpm --filter @novelforge/studio dev",
+    "studio:typecheck": "pnpm --filter @novelforge/studio typecheck",
+    "prepack": "pnpm run build:all",
     "prepare": "pnpm run build"
   },
   "dependencies": {

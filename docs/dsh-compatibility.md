@@ -73,5 +73,26 @@ dsh --profile novel web
 
 - **未做真实工具调用**：本机没有可用的 DeepSeek API Key，headless 启动停在 `MISSING_CREDENTIAL`（占位 Key 时 `api.deepseek.com/models` 返回 401）。因此"模型在会话内实际调用 `novel_*` 工具"这一环仍待你在有 Key 的机器上验收。
 - **未做人工审批链路的宿主内验收**：`ctx.approval.request` 的类型与返回值已按 `packages/interaction/user-approval/src/index.ts` 实现并由单测覆盖（含拒绝与取消），但未在真实交互界面中跑通一次。
-- 本 MVP 不实现内嵌 React/Slot 工作台；CLI 与 DSH 工具是已交付入口。未来 UI 必须单独核验 Client Modules、Remote API 与 Slot，不得让浏览器直接访问 SQLite。
+- 本版不实现 DSH 内嵌 React/Slot 工作台；入口为 DSH 工具、CLI，以及 0.3.0 新增的**独立本地工作台**（见下节）。未来若要内嵌，必须单独核验 Client Modules、Remote API 与 Slot，且不得让浏览器直接访问 SQLite。
 - DSH 仍可能调整预览接口。升级宿主时应重新核对上述官方文档、实际 `package.json` 和 `defineTool` 源码。
+
+## 0.3.0 新增：本地工作台 Studio（不新增任何 DSH 接口依赖）
+
+工作台走方案里允许的第二条路线——**独立本地 Web UI + 受控接口**，因此不引入新的 DSH API，也不需要重验工具注册与审批链路：
+
+| 关注点 | 实现 | 与 DSH 的关系 |
+| --- | --- | --- |
+| HTTP 服务 | `src/server/`，Node 内置 `node:http`，无新增运行时依赖 | 与 DSH 进程无关，可单独启动 |
+| 数据访问 | 浏览器只调 `/api/*`；服务端经 `NovelStore` / `NovelService` 读写 SQLite | 与 DSH 工具共用同一领域层与同一份数据库 |
+| 写入批准 | 工作台的写操作由作者在页面上点击并二次确认；DSH 工具仍走 `ctx.approval.request` | 两条路径都在 `audit_log` 留痕 |
+| 人工定稿 | 无模型审查记录时允许人工定稿，审计记 `chapter.finalize_manual` | DSH 工具路径**永不**传 `allowUnreviewed`，仍强制先审查 |
+| 页面托管 | `apps/studio/dist` 静态托管 + SPA 回退 | 不注册 DSH 客户端 Slot，不宣称嵌入 DSH GUI |
+
+启动与自检：
+
+```sh
+pnpm run studio:build   # 构建前端
+pnpm run studio         # 127.0.0.1:4319，自动开浏览器
+```
+
+安全边界（已在代码中实现并有测试覆盖）：默认只监听 `127.0.0.1`；绑定其他地址必须提供令牌；仅放行本机 Origin 的写请求；静态目录做路径穿越校验；畸形 URL 编码返回 400 而不是抛异常。

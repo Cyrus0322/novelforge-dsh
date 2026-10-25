@@ -4,7 +4,8 @@ import { configFromEnv, resolveApiKey, resolveDirectModel } from '../shared/conf
 import { NovelForgeError } from '../shared/errors.js'
 import { createNovelService } from '../workflow/novel-service.js'
 import type { NovelService } from '../workflow/novel-service.js'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { DEFAULT_STUDIO_PORT, openBrowser, startStudioServer } from '../server/index.js'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import 'dotenv/config'
 
@@ -12,7 +13,7 @@ const program = new Command()
 program
   .name('novelforge')
   .description('NovelForge DSH：可追溯、需人工确认的长篇小说创作工具')
-  .version('0.1.0')
+  .version('0.3.0')
   .option('--db <path>', 'SQLite 数据库路径')
   .option('--model <name>', 'DeepSeek 模型名称')
 
@@ -199,5 +200,42 @@ program.command('export').description('导出已定稿章节为 Markdown')
       process.stdout.write(markdown)
     }
   }))
+
+program.command('studio').description('启动可视化小说工作台（本地网页，浏览器不直接访问数据库）')
+  .option('--port <number>', '监听端口', String(DEFAULT_STUDIO_PORT))
+  .option('--host <address>', '监听地址（非本机时必须设置 NOVELFORGE_STUDIO_TOKEN）', '127.0.0.1')
+  .option('--token <token>', '访问令牌；也可用环境变量 NOVELFORGE_STUDIO_TOKEN')
+  .option('--no-open', '启动后不自动打开浏览器')
+  .action((options: { port: string; host: string; token?: string; open: boolean }) => {
+    void (async () => {
+      const config = configFromEnv()
+      const globalOptions = program.opts<GlobalOptions>()
+      if (globalOptions.db) config.databasePath = globalOptions.db
+      if (globalOptions.model) config.model = globalOptions.model
+      const handle = await startStudioServer({
+        config,
+        port: integer(options.port, 'port'),
+        host: options.host,
+        ...(options.token === undefined ? {} : { token: options.token }),
+      })
+      const built = existsSync(resolve(handle.studioDir, 'index.html'))
+      process.stdout.write(`NovelForge 工作台已启动：${handle.url}\n`)
+      process.stdout.write(`数据库：${resolve(config.databasePath)}\n`)
+      if (!built) {
+        process.stdout.write(`⚠️ 未找到前端构建产物（${handle.studioDir}），请先执行 pnpm run studio:build。\n`)
+      }
+      if (options.open) openBrowser(handle.url)
+      process.stdout.write('按 Ctrl+C 结束。\n')
+      const shutdown = (): void => {
+        void handle.close().then(() => process.exit(0))
+      }
+      process.on('SIGINT', shutdown)
+      process.on('SIGTERM', shutdown)
+    })().catch(error => {
+      const code = error instanceof NovelForgeError ? error.code : 'ERROR'
+      process.stderr.write(`错误 [${code}]：${error instanceof Error ? error.message : String(error)}\n`)
+      process.exitCode = 1
+    })
+  })
 
 await program.parseAsync(process.argv)
